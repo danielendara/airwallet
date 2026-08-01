@@ -55,6 +55,5 @@ Before publishing, open Cofferly and verify:
 - Adding a deduction changes the running balance.
 - Remove latest entry offers undo.
 - Changing the parent PIN saves and unlocks with the new PIN.
-- A fresh plain JSON legacy file migrates to encrypted storage after unlock.
-- Print this ledger opens a printable browser page.
-- Print both ledgers opens both ledgers in one printable page.
+- Print this wallet opens a printable browser page.
+- Print all wallets opens every wallet in one printable page.
