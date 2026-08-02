@@ -67,7 +67,7 @@ Use **Remove latest entry** in Settings to undo the most recent ledger entry for
 
 ## Printing
 
-Use **Print this ledger** to print the selected child's ledger, or **Print both ledgers** to print both child wallets together.
+Use **Print this wallet** to print the selected child's ledger, or **Print all wallets** to print every child wallet together.
 
 Cofferly writes a temporary printable HTML file (in your OS temp folder) and opens it in your browser. Previous print files are cleaned up when the app starts.
 
@@ -101,7 +101,7 @@ The app stores data locally in your operating system's app data folder.
 
 Data files are encrypted at rest using the parent PIN (Argon2id key derivation + XChaCha20-Poly1305 authenticated encryption). This protects against casual tampering with the ledger file.
 
-Old plain JSON files (including imports from Atlas Wallet / TallyNest / AirWallet) are automatically migrated to the encrypted format. Legacy files are encrypted on import and the plaintext copies are removed after a verified write. A plain file already at the Cofferly path is re-encrypted on the first successful unlock.
+Cofferly reads only its current encrypted data format. It does not import plaintext or previous app data files, and an unsupported file is never overwritten automatically. Back up `data.json` before replacing or moving it.
 
 The encryption key is derived once per unlock (envelope encryption); subsequent saves reuse a session data key so the UI does not stall on Argon2id for every transaction. Parent mode also locks automatically after a period of inactivity.
 

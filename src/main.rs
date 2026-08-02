@@ -14,12 +14,6 @@ mod views;
 
 pub const APP_NAME: &str = "Cofferly";
 pub const DATA_FILE_NAME: &str = "data.json";
-pub const ATLAS_LEGACY_APP_NAME: &str = "Atlas Wallet";
-pub const ATLAS_LEGACY_DATA_FILE_NAME: &str = "atlas-wallet-data.json";
-pub const LEGACY_APP_NAME: &str = "TallyNest";
-pub const LEGACY_DATA_FILE_NAME: &str = "tallynest-data.json";
-pub const AIRWALLET_LEGACY_APP_NAME: &str = "AirWallet";
-pub const AIRWALLET_LEGACY_DATA_FILE_NAME: &str = "airwallet-data.json";
 const PIN_LENGTH: usize = 4;
 const LOCK_SCREEN_IMAGE_BYTES: &[u8] = include_bytes!("../assets/cofferly-lock.jpg");
 const OPEN_COFFER_IMAGE_BYTES: &[u8] = include_bytes!("../assets/cofferly-open.png");
@@ -33,7 +27,7 @@ use data::{
     default_app_data, valid_cents, valid_child_name, valid_description, valid_pin, AppData, Entry,
     EntryKind, LedgerSort, OwnedLedgerRow, Wallet,
 };
-use io::{cleanup_temp_print_artifacts, data_path, load_app_data_with_legacy, save_encrypted};
+use io::{cleanup_temp_print_artifacts, data_path, save_encrypted};
 use money::{format_money, format_money_input, parse_dollars_to_cents};
 use print_html::{ledger_file_stem, write_printable_ledger};
 use theme::{app_icon, balance_color, configure_style};
@@ -148,8 +142,7 @@ struct CofferlyApp {
 }
 
 struct UnlockResult {
-    pin: String,
-    outcome: Result<(AppData, SessionCrypto, Option<String>), String>,
+    outcome: Result<(AppData, SessionCrypto), String>,
 }
 
 impl CofferlyApp {
@@ -158,96 +151,39 @@ impl CofferlyApp {
         cleanup_temp_print_artifacts();
 
         let data_path = data_path();
-        let (mut raw_bytes, raw_load_error) = match io::load_raw(&data_path) {
+        let (raw_bytes, raw_load_error) = match io::load_raw(&data_path) {
             Ok(raw_bytes) => (raw_bytes, None),
             Err(err) => (None, Some(err)),
         };
 
-        let (data, save_enabled, status) = if let Some(err) = raw_load_error {
+        let (save_enabled, status) = if let Some(err) = raw_load_error {
             (
-                default_app_data(),
                 false,
                 Status::error(format!(
                     "Could not read saved data: {err}. Changes are disabled."
                 )),
             )
         } else if let Some(bytes) = &raw_bytes {
-            if crypto::is_encrypted(bytes) {
+            if crypto::is_current_format(bytes) {
                 (
-                    default_app_data(),
                     true,
                     Status::info("Enter the parent PIN to unlock Cofferly."),
                 )
             } else {
-                // Plain JSON at the Cofferly path — load for PIN check; encrypt on unlock.
-                match load_app_data_with_legacy(&data_path) {
-                    Ok(outcome) => match outcome.data {
-                        Some(data) => (
-                            data,
-                            true,
-                            Status::info("Enter the parent PIN to unlock Cofferly."),
-                        ),
-                        None => (
-                            default_app_data(),
-                            true,
-                            Status::info("Enter the parent PIN to unlock Cofferly."),
-                        ),
-                    },
-                    Err(err) => (
-                        default_app_data(),
-                        false,
-                        Status::error(format!(
-                            "Could not load saved data: {err}. Changes are disabled."
-                        )),
+                (
+                    false,
+                    Status::error(
+                        "Saved data uses an unsupported format. Move the file aside to start fresh, or restore a current encrypted backup. Changes are disabled.",
                     ),
-                }
+                )
             }
         } else {
-            // No current file — attempt encrypted legacy migration.
-            match load_app_data_with_legacy(&data_path) {
-                Ok(outcome) => {
-                    if outcome.migrated_from_legacy {
-                        // Reload encrypted bytes; keep data hidden until PIN unlock.
-                        raw_bytes = io::load_raw(&data_path).ok().flatten();
-                        let note = outcome
-                            .retired_legacy_path
-                            .as_ref()
-                            .map(|p| {
-                                format!(
-                                    " Imported from {} and removed the plaintext copy.",
-                                    p.display()
-                                )
-                            })
-                            .unwrap_or_default();
-                        (
-                            default_app_data(),
-                            true,
-                            Status::info(format!(
-                                "Migrated legacy data to encrypted storage.{note} Enter the parent PIN to unlock."
-                            )),
-                        )
-                    } else if let Some(data) = outcome.data {
-                        (
-                            data,
-                            true,
-                            Status::info("Enter the parent PIN to unlock Cofferly."),
-                        )
-                    } else {
-                        (
-                            default_app_data(),
-                            true,
-                            Status::info("Enter the parent PIN to unlock Cofferly."),
-                        )
-                    }
-                }
-                Err(err) => (
-                    default_app_data(),
-                    // Migration may have written encrypted data even if legacy delete failed.
-                    raw_bytes.is_some() || data_path.exists(),
-                    Status::error(err),
-                ),
-            }
+            (
+                true,
+                Status::info("Enter the parent PIN to unlock Cofferly."),
+            )
         };
+        let data = default_app_data();
 
         let (selected_wallet, ledger_sort) = restore_ui_state(cc, data.wallets.len());
         let (lock_screen_image, lock_screen_bg) = load_lock_screen_image(&cc.egui_ctx);
@@ -334,6 +270,14 @@ impl CofferlyApp {
             return;
         }
 
+        if !self.save_enabled {
+            self.clear_pin_digits();
+            self.set_status_err(
+                "Cannot unlock while the saved data file is unreadable or unsupported.",
+            );
+            return;
+        }
+
         let entered = self.entered_parent_pin();
         if entered.len() != PIN_LENGTH {
             self.set_status_err("Enter all 4 digits of the parent PIN.");
@@ -342,7 +286,7 @@ impl CofferlyApp {
 
         // Background path only for encrypted blobs (Argon2id is expensive).
         if let Some(raw) = &self.raw_bytes {
-            if crypto::is_encrypted(raw) {
+            if crypto::is_current_format(raw) {
                 let raw = raw.clone();
                 let pin = entered;
                 let (tx, rx) = std::sync::mpsc::channel();
@@ -353,84 +297,61 @@ impl CofferlyApp {
                     let outcome = match crypto::decrypt(&raw, &pin) {
                         Ok((plain, session)) => match serde_json::from_slice::<AppData>(&plain) {
                             Ok(loaded) => match data::normalize_app_data(loaded) {
-                                Some(normalized) => Ok((normalized, session, None)),
+                                Some(normalized) => Ok((normalized, session)),
                                 None => Err("Saved data is invalid after decryption.".to_string()),
                             },
                             Err(err) => Err(format!("Could not parse decrypted data: {err}")),
                         },
                         Err(_) => Err("Wrong PIN or data has been tampered with.".to_string()),
                     };
-                    let _ = tx.send(UnlockResult { pin, outcome });
+                    let _ = tx.send(UnlockResult { outcome });
                 });
                 return;
             }
         }
 
-        // Plain JSON / first-run: no Argon2 yet, so stay on the UI thread.
+        // A clean first run does not need Argon2 yet, so stay on the UI thread.
         self.unlock_parent_sync();
     }
 
-    /// Synchronous unlock for plain-JSON / first-run paths, and for unit tests.
+    /// Synchronous unlock for first-run paths and unit tests.
     fn unlock_parent_sync(&mut self) {
         let entered = self.entered_parent_pin();
 
         if let Some(raw) = &self.raw_bytes {
-            if crypto::is_encrypted(raw) {
-                match crypto::decrypt(raw, &entered) {
-                    Ok((plain, session)) => {
-                        if let Ok(loaded) = serde_json::from_slice::<AppData>(&plain) {
-                            if let Some(normalized) = data::normalize_app_data(loaded) {
-                                self.apply_unlock(normalized, session, None);
-                                return;
-                            }
+            if !crypto::is_current_format(raw) {
+                self.clear_pin_digits();
+                self.session = None;
+                self.set_status_err(
+                    "Cannot unlock while the saved data file is unreadable or unsupported.",
+                );
+                return;
+            }
+
+            match crypto::decrypt(raw, &entered) {
+                Ok((plain, session)) => {
+                    if let Ok(loaded) = serde_json::from_slice::<AppData>(&plain) {
+                        if let Some(normalized) = data::normalize_app_data(loaded) {
+                            self.apply_unlock(normalized, session);
+                            return;
                         }
-                        self.clear_pin_digits();
-                        self.session = None;
-                        self.set_status_err("Wrong PIN or data has been tampered with.");
-                        return;
                     }
-                    Err(_) => {
-                        self.clear_pin_digits();
-                        self.session = None;
-                        self.set_status_err("Wrong PIN or data has been tampered with.");
-                        return;
-                    }
+                    self.clear_pin_digits();
+                    self.session = None;
+                    self.set_status_err("Wrong PIN or data has been tampered with.");
+                    return;
+                }
+                Err(_) => {
+                    self.clear_pin_digits();
+                    self.session = None;
+                    self.set_status_err("Wrong PIN or data has been tampered with.");
+                    return;
                 }
             }
         }
 
-        // Plain JSON path (or first run). Legacy files are encrypted at migration
-        // time; only a plaintext file already at the Cofferly path reaches here.
+        // First run: establish a session when the parent first saves, but unlock now.
         if entered == self.data.parent_pin {
-            if let Some(raw) = &self.raw_bytes {
-                if !crypto::is_encrypted(raw) {
-                    let data = self.data.clone();
-                    match self.save_encrypted_data_and_refresh(&data, &entered) {
-                        Ok(()) => {
-                            let session = self.session.take().expect("session established by save");
-                            self.apply_unlock(
-                                data,
-                                session,
-                                Some(
-                                    "Parent mode unlocked (data file migrated to encrypted format)."
-                                        .to_string(),
-                                ),
-                            );
-                        }
-                        Err(e) => {
-                            self.parent_unlocked = true;
-                            self.clear_pin_digits();
-                            self.invalidate_ledger_cache();
-                            self.set_status_err(format!(
-                                "Parent mode unlocked, but could not encrypt data file: {e}"
-                            ));
-                        }
-                    }
-                    return;
-                }
-            }
-
-            // First run: establish a session when the parent first saves, but unlock now.
             self.parent_unlocked = true;
             self.clear_pin_digits();
             self.invalidate_ledger_cache();
@@ -442,12 +363,7 @@ impl CofferlyApp {
         }
     }
 
-    fn apply_unlock(
-        &mut self,
-        data: AppData,
-        session: SessionCrypto,
-        status_override: Option<String>,
-    ) {
+    fn apply_unlock(&mut self, data: AppData, session: SessionCrypto) {
         // Clamp selection against the loaded wallet count.
         if self.selected_wallet >= data.wallets.len() {
             self.selected_wallet = 0;
@@ -458,11 +374,7 @@ impl CofferlyApp {
         self.clear_pin_digits();
         self.invalidate_ledger_cache();
         self.touch_interaction();
-        if let Some(msg) = status_override {
-            self.set_status_ok(msg);
-        } else {
-            self.set_status_ok("Parent mode unlocked.");
-        }
+        self.set_status_ok("Parent mode unlocked.");
     }
 
     fn poll_unlock(&mut self, ctx: &egui::Context) {
@@ -475,17 +387,7 @@ impl CofferlyApp {
                 self.unlocking = false;
                 self.unlock_rx = None;
                 match result.outcome {
-                    Ok((data, session, note)) => {
-                        self.apply_unlock(data, session, note);
-                        // Persist upgraded v2 envelope on first unlock of a v1 file.
-                        let pin = result.pin;
-                        let data = self.data.clone();
-                        if let Err(err) = self.save_encrypted_data_and_refresh(&data, &pin) {
-                            self.set_status_err(format!(
-                                "Unlocked, but could not refresh encrypted file: {err}"
-                            ));
-                        }
-                    }
+                    Ok((data, session)) => self.apply_unlock(data, session),
                     Err(err) => {
                         self.clear_pin_digits();
                         self.session = None;
@@ -735,12 +637,12 @@ impl CofferlyApp {
             return;
         }
 
-        let old_name = std::mem::take(&mut self.selected_wallet_mut().child_name);
+        let previous_child_name = std::mem::take(&mut self.selected_wallet_mut().child_name);
         self.selected_wallet_mut().child_name = name;
         self.child_name_input.clear();
         self.invalidate_ledger_cache();
         self.save_with_success(format!(
-            "Renamed {old_name} to {}.",
+            "Renamed {previous_child_name} to {}.",
             self.selected_wallet().child_name
         ));
     }
@@ -1308,7 +1210,7 @@ mod app_tests {
 
     fn saved_data(app: &CofferlyApp, pin: &str) -> AppData {
         let raw = std::fs::read(&app.data_path).unwrap();
-        assert!(crypto::is_encrypted(&raw));
+        assert!(crypto::is_current_format(&raw));
         let (plaintext, _) = crypto::decrypt(&raw, pin).unwrap();
         serde_json::from_slice(&plaintext).unwrap()
     }
@@ -1383,6 +1285,63 @@ mod app_tests {
         assert_ne!(app.selected_wallet().child_name, "Secret wallet");
         assert!(app.pin_digits.iter().all(String::is_empty));
         assert_eq!(app.status.text, "Wrong PIN or data has been tampered with.");
+        assert_eq!(app.status.severity, StatusSeverity::Error);
+    }
+
+    #[test]
+    fn completed_background_unlock_does_not_rewrite_unchanged_data() {
+        let (mut app, _dir) = test_app();
+        let stored = default_app_data();
+        let serialized = serde_json::to_vec(&stored).unwrap();
+        let mut encryption_session = None;
+        let encrypted = crypto::encrypt(&serialized, "2468", &mut encryption_session).unwrap();
+        std::fs::write(&app.data_path, &encrypted).unwrap();
+        let (_, unlock_session) = crypto::decrypt(&encrypted, "2468").unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(UnlockResult {
+            outcome: Ok((stored, unlock_session)),
+        })
+        .unwrap();
+        app.unlock_rx = Some(rx);
+        app.unlocking = true;
+        app.parent_unlocked = false;
+
+        app.poll_unlock(&egui::Context::default());
+
+        assert!(app.parent_unlocked);
+        assert_eq!(std::fs::read(&app.data_path).unwrap(), encrypted);
+    }
+
+    #[test]
+    fn first_run_unlocks_without_creating_a_file() {
+        let (mut app, _dir) = test_app();
+        app.parent_unlocked = false;
+        app.pin_digits = ["1".into(), "2".into(), "3".into(), "4".into()];
+
+        app.unlock_parent_sync();
+
+        assert!(app.parent_unlocked);
+        assert!(!app.data_path.exists());
+        assert_eq!(app.status.text, "Parent mode unlocked.");
+    }
+
+    #[test]
+    fn unsupported_data_cannot_be_unlocked_or_overwritten() {
+        let (mut app, _dir) = test_app();
+        let unsupported = br#"{"parent_pin":"1234","wallets":[]}"#.to_vec();
+        std::fs::write(&app.data_path, &unsupported).unwrap();
+        app.raw_bytes = Some(unsupported.clone());
+        app.parent_unlocked = false;
+        // Exercise the format guard itself even if a caller misclassifies storage as writable.
+        app.save_enabled = true;
+        app.pin_digits = ["1".into(), "2".into(), "3".into(), "4".into()];
+
+        app.start_unlock();
+
+        assert!(!app.parent_unlocked);
+        assert!(app.session.is_none());
+        assert_eq!(std::fs::read(&app.data_path).unwrap(), unsupported);
+        assert!(app.status.text.contains("Cannot unlock"));
         assert_eq!(app.status.severity, StatusSeverity::Error);
     }
 

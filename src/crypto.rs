@@ -6,9 +6,6 @@ use chacha20poly1305::{
 use rand::{rngs::SysRng, TryRng};
 use zeroize::Zeroizing;
 
-/// Legacy file format: `[version=1][salt 16][nonce 24][ciphertext]` — payload key
-/// is Argon2id(PIN, salt). Replaced by envelope encryption (v2).
-pub const ENCRYPTED_VERSION_V1: u8 = 1;
 /// Envelope format: `[version=2][salt 16][wrap_nonce 24][wrapped_key][payload_nonce 24][ciphertext]`.
 /// The PIN-derived key only wraps a random data key; the ledger is encrypted with that
 /// data key so saves after unlock do not re-run Argon2id.
@@ -158,7 +155,7 @@ impl SessionCrypto {
     }
 }
 
-/// Encrypts the plaintext using envelope encryption (v2).
+/// Encrypts the plaintext using the current envelope format.
 ///
 /// When `session` already holds a key for the current PIN, only a fresh payload
 /// nonce is generated — Argon2id is not run. On first use (or after a PIN change
@@ -177,68 +174,17 @@ pub fn encrypt(
         .encrypt_payload(plaintext)
 }
 
-/// Legacy encrypt used only by tests that still target v1 round-trips of the format
-/// helpers; production paths always use [`encrypt`] (v2).
-#[cfg(test)]
-pub fn encrypt_v1_for_tests(plaintext: &[u8], pin: &str) -> Result<Vec<u8>, String> {
-    let salt = random_bytes::<SALT_LEN>()?;
-    let (nonce, ciphertext) = {
-        let key = derive_key(pin, &salt)?;
-        encrypt_with_key(&key, plaintext)?
-    };
-
-    let mut out = Vec::with_capacity(1 + SALT_LEN + NONCE_LEN + ciphertext.len());
-    out.push(ENCRYPTED_VERSION_V1);
-    out.extend_from_slice(&salt);
-    out.extend_from_slice(&nonce);
-    out.extend_from_slice(&ciphertext);
-    Ok(out)
+/// True when the bytes begin with the current encrypted-file version.
+pub fn is_current_format(data: &[u8]) -> bool {
+    data.first().copied() == Some(ENCRYPTED_VERSION)
 }
 
-/// True for any supported encrypted blob (v1 or v2).
-pub fn is_encrypted(data: &[u8]) -> bool {
-    matches!(
-        data.first().copied(),
-        Some(ENCRYPTED_VERSION_V1) | Some(ENCRYPTED_VERSION)
-    )
-}
-
-/// Decrypts a v1 or v2 blob and returns the plaintext plus a session ready for
-/// subsequent saves without re-running Argon2id (except on PIN change).
+/// Decrypts a current-format blob and returns the plaintext plus a session ready
+/// for subsequent saves without re-running Argon2id (except on PIN change).
 pub fn decrypt(encrypted: &[u8], pin: &str) -> Result<(Zeroizing<Vec<u8>>, SessionCrypto), String> {
-    if encrypted.is_empty() {
+    if !is_current_format(encrypted) {
         return Err("unsupported or corrupted data format".to_string());
     }
-
-    match encrypted[0] {
-        ENCRYPTED_VERSION_V1 => decrypt_v1(encrypted, pin),
-        ENCRYPTED_VERSION => decrypt_v2(encrypted, pin),
-        _ => Err("unsupported or corrupted data format".to_string()),
-    }
-}
-
-fn decrypt_v1(encrypted: &[u8], pin: &str) -> Result<(Zeroizing<Vec<u8>>, SessionCrypto), String> {
-    let min_len = 1 + SALT_LEN + NONCE_LEN;
-    if encrypted.len() < min_len {
-        return Err("truncated encrypted data".to_string());
-    }
-
-    let salt = &encrypted[1..=SALT_LEN];
-    let nonce: &[u8; NONCE_LEN] = encrypted[1 + SALT_LEN..1 + SALT_LEN + NONCE_LEN]
-        .try_into()
-        .map_err(|_| "invalid nonce length".to_string())?;
-    let ciphertext = &encrypted[1 + SALT_LEN + NONCE_LEN..];
-
-    let key = derive_key(pin, salt)?;
-    let plaintext = decrypt_with_key(&key, nonce, ciphertext)?;
-
-    // Upgrade path: establish a fresh data-key session so the next save writes v2
-    // without another Argon2id run for every mutation.
-    let session = SessionCrypto::establish(pin)?;
-    Ok((plaintext, session))
-}
-
-fn decrypt_v2(encrypted: &[u8], pin: &str) -> Result<(Zeroizing<Vec<u8>>, SessionCrypto), String> {
     let min_len = 1 + SALT_LEN + NONCE_LEN + WRAPPED_KEY_LEN + NONCE_LEN;
     if encrypted.len() < min_len {
         return Err("truncated encrypted data".to_string());
@@ -359,10 +305,6 @@ mod tests {
 
     #[test]
     fn truncated_payloads_fail_without_panicking() {
-        for length in 0..(1 + SALT_LEN + NONCE_LEN) {
-            let truncated = vec![ENCRYPTED_VERSION_V1; length];
-            assert!(decrypt(&truncated, "1234").is_err());
-        }
         for length in 0..(1 + SALT_LEN + NONCE_LEN + WRAPPED_KEY_LEN + NONCE_LEN) {
             let truncated = vec![ENCRYPTED_VERSION; length];
             assert!(decrypt(&truncated, "1234").is_err());
@@ -370,20 +312,12 @@ mod tests {
     }
 
     #[test]
-    fn v1_blobs_still_decrypt_and_upgrade_session() {
-        let data = b"legacy ledger";
-        let encrypted = encrypt_v1_for_tests(data, "2468").unwrap();
-        assert_eq!(encrypted[0], ENCRYPTED_VERSION_V1);
-        assert!(is_encrypted(&encrypted));
-
-        let (plain, session) = decrypt(&encrypted, "2468").unwrap();
-        assert_eq!(plain.as_slice(), data);
-
-        let mut session = Some(session);
-        let upgraded = encrypt(data, "2468", &mut session).unwrap();
-        assert_eq!(upgraded[0], ENCRYPTED_VERSION);
-        let (plain2, _) = decrypt(&upgraded, "2468").unwrap();
-        assert_eq!(plain2.as_slice(), data);
+    fn retired_and_unknown_versions_are_not_current() {
+        assert!(!is_current_format(&[]));
+        assert!(!is_current_format(&[1]));
+        assert!(!is_current_format(&[99]));
+        assert!(is_current_format(&[ENCRYPTED_VERSION]));
+        assert!(decrypt(&[1], "2468").is_err());
     }
 
     #[test]
