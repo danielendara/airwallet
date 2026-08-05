@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Renames the encrypted data file from `data.json` to `vault.cofferly`. Existing current-format files are copied atomically, verified byte-for-byte, and retained untouched as a recovery backup.
 - **Security:** Removes plaintext and pre-Cofferly import paths. Unsupported data files now remain locked and are never overwritten automatically.
 - **Performance / crypto:** Envelope encryption derives Argon2id once per unlock and caches a data key for the session, so saves do not freeze the UI. PIN unlock runs Argon2id off the UI thread, and successful unlocks no longer rewrite an unchanged data file.
 - Printable ledgers are written to the OS temp directory and cleaned up on launch, instead of persisting plaintext HTML next to encrypted data.

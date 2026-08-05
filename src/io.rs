@@ -6,16 +6,77 @@ use zeroize::Zeroizing;
 
 use crate::crypto::SessionCrypto;
 use crate::data::AppData;
-use crate::{APP_NAME, DATA_FILE_NAME};
+use crate::{APP_NAME, DATA_FILE_NAME, PREVIOUS_DATA_FILE_NAME};
+
+#[derive(Debug, Default)]
+pub struct DataVaultPreparation {
+    /// The previous encrypted file is deliberately retained until the user has
+    /// unlocked and verified the new vault on their own machine.
+    pub preserved_previous_file: Option<PathBuf>,
+}
 
 pub fn data_path() -> PathBuf {
     app_data_base().join(APP_NAME).join(DATA_FILE_NAME)
+}
+
+fn previous_data_path() -> PathBuf {
+    app_data_base().join(APP_NAME).join(PREVIOUS_DATA_FILE_NAME)
 }
 
 fn app_data_base() -> PathBuf {
     dirs::data_local_dir()
         .or_else(|| std::env::current_dir().ok())
         .unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// Prepare the current vault path without risking the previous encrypted file.
+///
+/// When only `data.json` exists, its encrypted bytes are copied atomically to
+/// `vault.cofferly` and verified byte-for-byte. The source is never deleted. If
+/// both files exist, the current vault always wins and neither file is changed.
+pub fn prepare_data_vault() -> Result<DataVaultPreparation, String> {
+    prepare_data_vault_at(&data_path(), &previous_data_path())
+}
+
+fn prepare_data_vault_at(
+    current_path: &Path,
+    previous_path: &Path,
+) -> Result<DataVaultPreparation, String> {
+    if current_path.exists() {
+        return Ok(DataVaultPreparation::default());
+    }
+
+    let Some(previous_bytes) = load_raw(previous_path)? else {
+        return Ok(DataVaultPreparation::default());
+    };
+
+    if !crate::crypto::is_current_format(&previous_bytes) {
+        return Err(format!(
+            "{} is not a supported encrypted Cofferly file. It was left untouched and no new vault was created",
+            previous_path.display()
+        ));
+    }
+
+    write_new_atomically(current_path, &previous_bytes).map_err(|err| {
+        format!(
+            "Could not copy {} to {}: {err}. The original file was left untouched",
+            previous_path.display(),
+            current_path.display()
+        )
+    })?;
+
+    let copied_bytes = load_raw(current_path)?
+        .ok_or_else(|| format!("Copied vault is missing at {}", current_path.display()))?;
+    if copied_bytes != previous_bytes {
+        return Err(format!(
+            "Copied vault verification failed at {}. The original file remains untouched",
+            current_path.display()
+        ));
+    }
+
+    Ok(DataVaultPreparation {
+        preserved_previous_file: Some(previous_path.to_path_buf()),
+    })
 }
 
 pub fn load_raw(path: &Path) -> Result<Option<Vec<u8>>, String> {
@@ -66,6 +127,31 @@ fn write_atomically(path: &Path, contents: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
+/// Create a new file atomically without replacing a file another process may
+/// have created after our existence check.
+fn write_new_atomically(path: &Path, contents: &[u8]) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+    }
+
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("Could not find parent folder for {}", path.display()))?;
+    let mut temp_file = tempfile::NamedTempFile::new_in(parent).map_err(|err| err.to_string())?;
+    temp_file
+        .write_all(contents)
+        .map_err(|err| err.to_string())?;
+    temp_file
+        .as_file_mut()
+        .sync_all()
+        .map_err(|err| err.to_string())?;
+    temp_file
+        .persist_noclobber(path)
+        .map_err(|err| err.error.to_string())?;
+
+    Ok(())
+}
+
 /// Best-effort cleanup of previous print artifacts under the OS temp directory.
 pub fn cleanup_temp_print_artifacts() {
     let temp = std::env::temp_dir();
@@ -90,9 +176,82 @@ mod tests {
     use crate::data::default_app_data;
     use tempfile::tempdir;
 
+    fn encrypted_fixture(pin: &str) -> Vec<u8> {
+        let serialized = serde_json::to_vec(&default_app_data()).unwrap();
+        let mut session = None;
+        crate::crypto::encrypt(&serialized, pin, &mut session).unwrap()
+    }
+
     #[test]
-    fn stores_current_data_in_generic_file_name() {
-        assert_eq!(DATA_FILE_NAME, "data.json");
+    fn stores_current_data_in_vault_file() {
+        assert_eq!(DATA_FILE_NAME, "vault.cofferly");
+        assert_eq!(PREVIOUS_DATA_FILE_NAME, "data.json");
+    }
+
+    #[test]
+    fn copies_previous_encrypted_file_and_preserves_the_backup() {
+        let test_dir = tempdir().unwrap();
+        let previous_path = test_dir.path().join(PREVIOUS_DATA_FILE_NAME);
+        let current_path = test_dir.path().join(DATA_FILE_NAME);
+        let previous_bytes = encrypted_fixture("2468");
+        fs::write(&previous_path, &previous_bytes).unwrap();
+
+        let preparation = prepare_data_vault_at(&current_path, &previous_path).unwrap();
+
+        assert_eq!(
+            preparation.preserved_previous_file.as_deref(),
+            Some(previous_path.as_path())
+        );
+        assert_eq!(fs::read(&current_path).unwrap(), previous_bytes);
+        assert_eq!(fs::read(&previous_path).unwrap(), previous_bytes);
+        let (plaintext, _) = crate::crypto::decrypt(&previous_bytes, "2468").unwrap();
+        let copied_data: AppData = serde_json::from_slice(&plaintext).unwrap();
+        assert_eq!(copied_data.wallets.len(), default_app_data().wallets.len());
+        assert_eq!(copied_data.wallets[0].child_name, "Child 1");
+    }
+
+    #[test]
+    fn existing_current_vault_takes_precedence_without_touching_either_file() {
+        let test_dir = tempdir().unwrap();
+        let previous_path = test_dir.path().join(PREVIOUS_DATA_FILE_NAME);
+        let current_path = test_dir.path().join(DATA_FILE_NAME);
+        let previous_bytes = encrypted_fixture("1111");
+        let current_bytes = encrypted_fixture("2222");
+        fs::write(&previous_path, &previous_bytes).unwrap();
+        fs::write(&current_path, &current_bytes).unwrap();
+
+        let preparation = prepare_data_vault_at(&current_path, &previous_path).unwrap();
+
+        assert!(preparation.preserved_previous_file.is_none());
+        assert_eq!(fs::read(&current_path).unwrap(), current_bytes);
+        assert_eq!(fs::read(&previous_path).unwrap(), previous_bytes);
+    }
+
+    #[test]
+    fn unsupported_previous_file_is_left_untouched_without_creating_a_vault() {
+        let test_dir = tempdir().unwrap();
+        let previous_path = test_dir.path().join(PREVIOUS_DATA_FILE_NAME);
+        let current_path = test_dir.path().join(DATA_FILE_NAME);
+        let unsupported = br#"{"wallets":[]}"#;
+        fs::write(&previous_path, unsupported).unwrap();
+
+        let error = prepare_data_vault_at(&current_path, &previous_path).unwrap_err();
+
+        assert!(error.contains("not a supported encrypted Cofferly file"));
+        assert!(!current_path.exists());
+        assert_eq!(fs::read(&previous_path).unwrap(), unsupported);
+    }
+
+    #[test]
+    fn no_existing_files_is_a_clean_first_run() {
+        let test_dir = tempdir().unwrap();
+        let previous_path = test_dir.path().join(PREVIOUS_DATA_FILE_NAME);
+        let current_path = test_dir.path().join(DATA_FILE_NAME);
+
+        let preparation = prepare_data_vault_at(&current_path, &previous_path).unwrap();
+
+        assert!(preparation.preserved_previous_file.is_none());
+        assert!(!current_path.exists());
     }
 
     #[test]
