@@ -97,11 +97,24 @@ To create a release build:
 cargo build --release
 ```
 
-The app stores data locally in your operating system's app data folder.
+The app stores data locally as `vault.cofferly` in your operating system's Cofferly app data folder.
 
 Data files are encrypted at rest using the parent PIN (Argon2id key derivation + XChaCha20-Poly1305 authenticated encryption). This protects against casual tampering with the ledger file.
 
-Cofferly reads only its current encrypted data format. It does not import plaintext or previous app data files, and an unsupported file is never overwritten automatically. Back up `data.json` before replacing or moving it.
+Cofferly reads only its current encrypted data format. The custom filename accurately identifies an encrypted Cofferly vault; security does not depend on hiding the filename or format.
+
+### Upgrading from `data.json`
+
+On the first launch after this filename change, Cofferly safely transitions an existing encrypted `data.json`:
+
+1. If `vault.cofferly` already exists, Cofferly uses it and does not modify either file.
+2. Otherwise, Cofferly validates that `data.json` has the current encrypted format.
+3. It atomically creates `vault.cofferly` and verifies that every byte matches the source.
+4. It keeps `data.json` untouched as a recovery backup.
+
+After unlocking, verify every wallet and recent entry, close and reopen Cofferly, and verify the vault again. Only then should you archive or manually delete `data.json`. If verification fails, close Cofferly, move `vault.cofferly` aside, and keep the original `data.json` for recovery.
+
+Plaintext and unsupported files are never converted or overwritten automatically.
 
 The encryption key is derived once per unlock (envelope encryption); subsequent saves reuse a session data key so the UI does not stall on Argon2id for every transaction. Parent mode also locks automatically after a period of inactivity.
 
