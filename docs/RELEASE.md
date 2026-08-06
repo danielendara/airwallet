@@ -55,5 +55,8 @@ Before publishing, open Cofferly and verify:
 - Adding a deposit changes the running balance.
 - Adding a deduction changes the running balance.
 - Remove latest entry offers undo.
+- Changing the Coffer Story saves and unlocks with the new story.
+- A current encrypted `data.json` is copied to `vault.cofferly`, verifies successfully, and remains in place as a backup.
+- When both data files exist, `vault.cofferly` takes precedence and neither file is modified during startup.
 - Print this wallet opens a printable browser page.
 - Print all wallets opens every wallet in one printable page.

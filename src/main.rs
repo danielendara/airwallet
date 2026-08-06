@@ -15,7 +15,8 @@ mod theme;
 mod views;
 
 pub const APP_NAME: &str = "Cofferly";
-pub const DATA_FILE_NAME: &str = "data.json";
+pub const DATA_FILE_NAME: &str = "vault.cofferly";
+const PREVIOUS_DATA_FILE_NAME: &str = "data.json";
 const PIN_LENGTH: usize = 4;
 const LOCK_SCREEN_IMAGE_BYTES: &[u8] = include_bytes!("../assets/cofferly-lock.jpg");
 const OPEN_COFFER_IMAGE_BYTES: &[u8] = include_bytes!("../assets/cofferly-open.png");
@@ -32,7 +33,7 @@ use data::{
     default_app_data, valid_cents, valid_child_name, valid_description, AppData, Entry, EntryKind,
     LedgerSort, OwnedLedgerRow, Wallet,
 };
-use io::{cleanup_temp_print_artifacts, data_path, save_encrypted};
+use io::{cleanup_temp_print_artifacts, data_path, prepare_data_vault, save_encrypted};
 use money::{format_money, format_money_input, parse_dollars_to_cents};
 use print_html::{ledger_file_stem, write_printable_ledger};
 use theme::{app_icon, balance_color, configure_style};
@@ -148,6 +149,9 @@ struct CofferlyApp {
     story_icon_textures: HashMap<&'static str, egui::TextureHandle>,
     parent_unlocked: bool,
     save_enabled: bool,
+    /// True for the launch that copied `data.json`; keeps the recovery reminder
+    /// visible after the parent proves the new vault can be decrypted.
+    previous_data_backup_preserved: bool,
     status: Status,
     data_path: PathBuf,
     lock_screen_image: Option<egui::TextureHandle>,
@@ -174,17 +178,26 @@ impl CofferlyApp {
         cleanup_temp_print_artifacts();
 
         let data_path = data_path();
-        let (raw_bytes, raw_load_error) = match io::load_raw(&data_path) {
-            Ok(raw_bytes) => (raw_bytes, None),
+        let (preserved_previous_file, preparation_error) = match prepare_data_vault() {
+            Ok(preparation) => (preparation.preserved_previous_file, None),
             Err(err) => (None, Some(err)),
         };
+        let previous_data_backup_preserved = preserved_previous_file.is_some();
+        let (raw_bytes, storage_error) = if let Some(err) = preparation_error {
+            (None, Some(err))
+        } else {
+            match io::load_raw(&data_path) {
+                Ok(raw_bytes) => (raw_bytes, None),
+                Err(err) => (None, Some(err)),
+            }
+        };
 
-        let (save_enabled, lock_mode, status) = if let Some(err) = raw_load_error {
+        let (save_enabled, lock_mode, status) = if let Some(err) = storage_error {
             (
                 false,
                 LockMode::Story,
                 Status::error(format!(
-                    "Could not read saved data: {err}. Changes are disabled."
+                    "Could not prepare saved data: {err}. Changes are disabled."
                 )),
             )
         } else if let Some(bytes) = &raw_bytes {
@@ -194,15 +207,18 @@ impl CofferlyApp {
                 } else {
                     LockMode::Story
                 };
-                (
-                    true,
-                    mode,
-                    Status::info(if mode == LockMode::LegacyPin {
-                        "Enter the legacy 4-digit PIN to migrate to Coffer Story."
+                let message = if previous_data_backup_preserved {
+                    if mode == LockMode::LegacyPin {
+                        "Copied encrypted data into vault.cofferly. The original data.json remains untouched as a backup. Enter the legacy PIN to enroll a Coffer Story."
                     } else {
-                        "Choose your Coffer Story to unlock Cofferly."
-                    }),
-                )
+                        "Copied encrypted data into vault.cofferly. The original data.json remains untouched as a backup. Choose your Coffer Story to verify the vault."
+                    }
+                } else if mode == LockMode::LegacyPin {
+                    "Enter the legacy 4-digit PIN to migrate to Coffer Story."
+                } else {
+                    "Choose your Coffer Story to unlock Cofferly."
+                };
+                (true, mode, Status::info(message))
             } else {
                 (
                     false,
@@ -251,6 +267,7 @@ impl CofferlyApp {
             story_icon_textures,
             parent_unlocked: false,
             save_enabled,
+            previous_data_backup_preserved,
             status,
             data_path,
             lock_screen_image,
@@ -442,7 +459,11 @@ impl CofferlyApp {
                 "Legacy PIN accepted. Enroll your Coffer Story to finish migration.",
             );
         } else {
-            self.set_status_ok("Coffer Story unlocked.");
+            self.set_status_ok(if self.previous_data_backup_preserved {
+                "Coffer Story unlocked. Verify your wallets before removing the data.json backup."
+            } else {
+                "Coffer Story unlocked."
+            });
         }
     }
 
@@ -1513,6 +1534,7 @@ mod app_tests {
             story_icon_textures: HashMap::new(),
             parent_unlocked: true,
             save_enabled: true,
+            previous_data_backup_preserved: false,
             status: Status::info(String::new()),
             data_path: dir.path().join(DATA_FILE_NAME),
             lock_screen_image: None,
@@ -1828,11 +1850,13 @@ mod app_tests {
         app.unlock_rx = Some(rx);
         app.unlocking = true;
         app.parent_unlocked = false;
+        app.previous_data_backup_preserved = true;
 
         app.poll_unlock(&egui::Context::default());
 
         assert!(app.parent_unlocked);
         assert_eq!(std::fs::read(&app.data_path).unwrap(), encrypted);
+        assert!(app.status.text.contains("data.json backup"));
     }
 
     #[test]
