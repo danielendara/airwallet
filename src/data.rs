@@ -11,6 +11,9 @@ pub const STARTING_BALANCE_DESCRIPTION: &str = "Starting balance";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppData {
+    /// Only populated when deserializing a legacy v2 PIN envelope. New story
+    /// payloads never serialize an authentication secret into the ledger.
+    #[serde(default, skip_serializing)]
     pub parent_pin: String,
     pub wallets: Vec<Wallet>,
 }
@@ -220,7 +223,7 @@ pub fn normalize_app_data(mut data: AppData) -> Option<AppData> {
     }
 
     if !valid_pin(&data.parent_pin) {
-        data.parent_pin = DEFAULT_PARENT_PIN.to_string();
+        data.parent_pin = DEFAULT_PARENT_PIN.to_owned();
     }
 
     Some(data)
@@ -250,13 +253,6 @@ fn clamp_cents(cents: i64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn validates_four_digit_pin() {
-        assert!(valid_pin("1234"));
-        assert!(!valid_pin("123"));
-        assert!(!valid_pin("12a4"));
-    }
 
     #[test]
     fn validates_child_names() {

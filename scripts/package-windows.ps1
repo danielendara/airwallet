@@ -36,7 +36,7 @@ try {
 Cofferly $PackageVersion
 
 Run Cofferly.exe to start.
-First-run parent PIN: 1234
+On first run, Cofferly generates a six-object Coffer Story. Write it down and store it safely.
 
 Data is stored locally in the Windows app data folder.
 "@ | Set-Content -LiteralPath (Join-Path $packageDir "START-HERE.txt")
@@ -51,4 +51,3 @@ Data is stored locally in the Windows app data folder.
 finally {
     Pop-Location
 }
-

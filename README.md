@@ -2,9 +2,9 @@
 
 Cofferly is a small Windows-friendly Rust desktop app for tracking money held for kids.
 
-Parent PIN screen:
+Parent Coffer Story unlock:
 
-![Cofferly parent PIN screen](docs/screenshots/cofferly-pin-screen.png)
+![Cofferly Coffer Story unlock screen](docs/screenshots/cofferly-story-unlock.png)
 
 Unlocked wallet ledger:
 
@@ -22,7 +22,7 @@ Cofferly starts with two neutral child wallets. Each wallet keeps a local ledger
 - Description for each entry
 - Date
 - Automatic running balance
-- Parent PIN unlock
+- Coffer Story parent unlock
 - Printable ledgers
 - Custom child wallet names
 - Local encrypted data file
@@ -43,19 +43,16 @@ For a portable release zip:
 
 The zip will be created in `dist/`.
 
-## Parent PIN
+## Coffer Story
 
-Cofferly opens to a parent PIN screen so kids cannot add, remove, rename, or print entries without a parent unlocking the app first.
+Cofferly opens to a Coffer Story screen so kids cannot add, remove, rename, or print entries without a parent unlocking the app first.
 
-The first-run PIN is:
+Cofferly generates a sequence of six distinct objects from a stable set of 30. Write the sequence down (or print a recovery card) and store it away from the computer, then confirm it by choosing the objects in order from the shuffled grid. Cofferly deliberately generates the story rather than allowing a human-chosen sequence.
 
-```text
-1234
-```
+The story is also the input used to encrypt the local data file. Six ordered, distinct objects from 30 provide 427,518,000 possible sequences (about 28.7 bits). This is a substantial improvement over a four-digit PIN, but it does not protect against someone watching the objects as they are entered.
 
-After unlocking, open **Settings** to choose a different 4-digit PIN.
+There is no local bypass: if both the story and recovery copy are lost, the encrypted ledger cannot be recovered. Existing installations with a PIN display a clearly labeled Legacy PIN screen and require Coffer Story enrollment after successful unlock.
 
-The PIN is used both to unlock the interface and to derive the key for encrypting the data file on disk. It is a simple family-use protection (4 digits), not high-security encryption.
 
 ## Child Wallets
 
@@ -99,13 +96,13 @@ cargo build --release
 
 The app stores data locally in your operating system's app data folder.
 
-Data files are encrypted at rest using the parent PIN (Argon2id key derivation + XChaCha20-Poly1305 authenticated encryption). This protects against casual tampering with the ledger file.
+Data files are encrypted at rest using the Coffer Story (Argon2id key derivation + XChaCha20-Poly1305 authenticated encryption). This protects against casual tampering with the ledger file.
 
 Cofferly reads only its current encrypted data format. It does not import plaintext or previous app data files, and an unsupported file is never overwritten automatically. Back up `data.json` before replacing or moving it.
 
 The encryption key is derived once per unlock (envelope encryption); subsequent saves reuse a session data key so the UI does not stall on Argon2id for every transaction. Parent mode also locks automatically after a period of inactivity.
 
-Derived keys and plaintext serialization/decryption buffers are zeroized when dropped. The app's goal is family-use privacy and tamper resistance, not protection against a determined attacker who has the data file and can brute-force all 10,000 PINs offline.
+Derived keys and plaintext serialization/decryption buffers are zeroized when dropped. The app's goal is family-use privacy and tamper resistance, not absolute protection against a determined attacker who has the data file.
 
 If `cargo` is not on PATH on Windows, add Rust's Cargo folder to PATH:
 

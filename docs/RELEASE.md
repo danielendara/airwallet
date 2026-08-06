@@ -43,8 +43,9 @@ Before announcing a release, review [GITHUB_SETTINGS.md](GITHUB_SETTINGS.md).
 Before publishing, open Cofferly and verify:
 
 - The app launches as `Cofferly`.
-- The parent PIN screen appears first.
-- PIN `1234` unlocks a fresh install.
+- Coffer Story setup appears first, generates six objects, and requires confirmation from a shuffled grid.
+- Restart after setup and unlock with the same Coffer Story.
+- A legacy v2 PIN file opens the Legacy PIN screen and migrates only after Coffer Story confirmation.
 - Both default child wallets are visible.
 - Settings opens from the top bar.
 - The selected wallet can be renamed.
@@ -54,6 +55,5 @@ Before publishing, open Cofferly and verify:
 - Adding a deposit changes the running balance.
 - Adding a deduction changes the running balance.
 - Remove latest entry offers undo.
-- Changing the parent PIN saves and unlocks with the new PIN.
 - Print this wallet opens a printable browser page.
 - Print all wallets opens every wallet in one printable page.

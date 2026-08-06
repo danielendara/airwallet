@@ -1,6 +1,7 @@
 use chrono::Local;
 use eframe::egui;
 use eframe::egui::Color32;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -9,6 +10,7 @@ mod data;
 mod io;
 mod money;
 mod print_html;
+mod story;
 mod theme;
 mod views;
 
@@ -20,12 +22,15 @@ const OPEN_COFFER_IMAGE_BYTES: &[u8] = include_bytes!("../assets/cofferly-open.p
 /// Forgiving default so parents are not locked mid-chore; still protects a
 /// shared family PC left open.
 const AUTO_LOCK_AFTER: Duration = Duration::from_secs(10 * 60);
+/// Escalating delays after consecutive wrong PINs. This slows automated UI
+/// guessing without creating a permanent lockout for a parent.
+const UNLOCK_COOLDOWN_MINUTES: [u64; 6] = [1, 2, 5, 15, 30, 60];
 const UI_STATE_KEY: &str = "cofferly/ui_state";
 
 use crypto::SessionCrypto;
 use data::{
-    default_app_data, valid_cents, valid_child_name, valid_description, valid_pin, AppData, Entry,
-    EntryKind, LedgerSort, OwnedLedgerRow, Wallet,
+    default_app_data, valid_cents, valid_child_name, valid_description, AppData, Entry, EntryKind,
+    LedgerSort, OwnedLedgerRow, Wallet,
 };
 use io::{cleanup_temp_print_artifacts, data_path, save_encrypted};
 use money::{format_money, format_money_input, parse_dollars_to_cents};
@@ -109,6 +114,18 @@ struct UiState {
     ledger_sort_newest_first: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LockMode {
+    SetupReveal,
+    SetupConfirm,
+    Story,
+    LegacyPin,
+    MigrateReveal,
+    MigrateConfirm,
+    ChangeReveal,
+    ChangeConfirm,
+}
+
 struct CofferlyApp {
     data: AppData,
     raw_bytes: Option<Vec<u8>>,
@@ -124,7 +141,11 @@ struct CofferlyApp {
     new_child_name_input: String,
     pin_digits: [String; PIN_LENGTH],
     pending_pin_focus: Option<usize>,
-    new_pin_input: String,
+    lock_mode: LockMode,
+    pending_story: Option<[&'static str; story::STORY_LENGTH]>,
+    story_selections: Vec<&'static str>,
+    display_order: Vec<&'static str>,
+    story_icon_textures: HashMap<&'static str, egui::TextureHandle>,
     parent_unlocked: bool,
     save_enabled: bool,
     status: Status,
@@ -139,6 +160,8 @@ struct CofferlyApp {
     /// True while Argon2id / decrypt runs off the UI thread.
     unlocking: bool,
     unlock_rx: Option<std::sync::mpsc::Receiver<UnlockResult>>,
+    failed_unlock_attempts: u32,
+    unlock_cooldown_until: Option<Instant>,
 }
 
 struct UnlockResult {
@@ -156,22 +179,34 @@ impl CofferlyApp {
             Err(err) => (None, Some(err)),
         };
 
-        let (save_enabled, status) = if let Some(err) = raw_load_error {
+        let (save_enabled, lock_mode, status) = if let Some(err) = raw_load_error {
             (
                 false,
+                LockMode::Story,
                 Status::error(format!(
                     "Could not read saved data: {err}. Changes are disabled."
                 )),
             )
         } else if let Some(bytes) = &raw_bytes {
             if crypto::is_current_format(bytes) {
+                let mode = if bytes.first() == Some(&crypto::LEGACY_PIN_VERSION) {
+                    LockMode::LegacyPin
+                } else {
+                    LockMode::Story
+                };
                 (
                     true,
-                    Status::info("Enter the parent PIN to unlock Cofferly."),
+                    mode,
+                    Status::info(if mode == LockMode::LegacyPin {
+                        "Enter the legacy 4-digit PIN to migrate to Coffer Story."
+                    } else {
+                        "Choose your Coffer Story to unlock Cofferly."
+                    }),
                 )
             } else {
                 (
                     false,
+                    LockMode::Story,
                     Status::error(
                         "Saved data uses an unsupported format. Move the file aside to start fresh, or restore a current encrypted backup. Changes are disabled.",
                     ),
@@ -180,7 +215,8 @@ impl CofferlyApp {
         } else {
             (
                 true,
-                Status::info("Enter the parent PIN to unlock Cofferly."),
+                LockMode::SetupReveal,
+                Status::info("Cofferly created a six-object Coffer Story for you."),
             )
         };
         let data = default_app_data();
@@ -188,6 +224,7 @@ impl CofferlyApp {
         let (selected_wallet, ledger_sort) = restore_ui_state(cc, data.wallets.len());
         let (lock_screen_image, lock_screen_bg) = load_lock_screen_image(&cc.egui_ctx);
         let open_coffer_image = load_open_coffer_image(&cc.egui_ctx);
+        let story_icon_textures = load_story_icon_textures(&cc.egui_ctx);
 
         Self {
             data,
@@ -206,7 +243,12 @@ impl CofferlyApp {
             new_child_name_input: String::new(),
             pin_digits: Default::default(),
             pending_pin_focus: Some(0),
-            new_pin_input: String::new(),
+            lock_mode,
+            pending_story: story::generate().ok(),
+            story_selections: Vec::new(),
+            display_order: story::shuffled_catalog()
+                .unwrap_or_else(|_| story::CATALOG.iter().map(|(id, _)| *id).collect()),
+            story_icon_textures,
             parent_unlocked: false,
             save_enabled,
             status,
@@ -220,6 +262,8 @@ impl CofferlyApp {
             last_interaction: Instant::now(),
             unlocking: false,
             unlock_rx: None,
+            failed_unlock_attempts: 0,
+            unlock_cooldown_until: None,
         }
     }
 
@@ -267,6 +311,15 @@ impl CofferlyApp {
     /// the window stays responsive; results are applied in [`Self::poll_unlock`].
     fn start_unlock(&mut self) {
         if self.unlocking {
+            return;
+        }
+
+        if let Some(remaining) = self.unlock_cooldown_remaining() {
+            self.clear_pin_digits();
+            self.set_status_err(format!(
+                "Too many wrong PIN attempts. Try again in {}.",
+                format_cooldown(remaining)
+            ));
             return;
         }
 
@@ -338,13 +391,17 @@ impl CofferlyApp {
                     }
                     self.clear_pin_digits();
                     self.session = None;
-                    self.set_status_err("Wrong PIN or data has been tampered with.");
+                    self.register_unlock_failure(
+                        "Wrong credential or data has been tampered with.",
+                    );
                     return;
                 }
                 Err(_) => {
                     self.clear_pin_digits();
                     self.session = None;
-                    self.set_status_err("Wrong PIN or data has been tampered with.");
+                    self.register_unlock_failure(
+                        "Wrong credential or data has been tampered with.",
+                    );
                     return;
                 }
             }
@@ -356,10 +413,11 @@ impl CofferlyApp {
             self.clear_pin_digits();
             self.invalidate_ledger_cache();
             self.touch_interaction();
+            self.reset_pin_failures();
             self.set_status_ok("Parent mode unlocked.");
         } else {
             self.clear_pin_digits();
-            self.set_status_err("Wrong PIN. Try again.");
+            self.register_unlock_failure("Wrong PIN.");
         }
     }
 
@@ -369,12 +427,23 @@ impl CofferlyApp {
             self.selected_wallet = 0;
         }
         self.data = data;
+        let legacy = session.version() == crypto::LEGACY_PIN_VERSION;
         self.session = Some(session);
-        self.parent_unlocked = true;
+        self.parent_unlocked = !legacy;
         self.clear_pin_digits();
+        self.reset_story_entry();
         self.invalidate_ledger_cache();
         self.touch_interaction();
-        self.set_status_ok("Parent mode unlocked.");
+        self.reset_pin_failures();
+        if legacy {
+            self.lock_mode = LockMode::MigrateReveal;
+            self.pending_story = story::generate().ok();
+            self.set_status_info(
+                "Legacy PIN accepted. Enroll your Coffer Story to finish migration.",
+            );
+        } else {
+            self.set_status_ok("Coffer Story unlocked.");
+        }
     }
 
     fn poll_unlock(&mut self, ctx: &egui::Context) {
@@ -390,8 +459,9 @@ impl CofferlyApp {
                     Ok((data, session)) => self.apply_unlock(data, session),
                     Err(err) => {
                         self.clear_pin_digits();
+                        self.reset_story_entry();
                         self.session = None;
-                        self.set_status_err(err);
+                        self.register_unlock_failure(&err);
                     }
                 }
                 ctx.request_repaint();
@@ -434,6 +504,232 @@ impl CofferlyApp {
 
     fn touch_interaction(&mut self) {
         self.last_interaction = Instant::now();
+    }
+
+    fn unlock_cooldown_remaining(&self) -> Option<Duration> {
+        self.unlock_cooldown_until
+            .and_then(|until| until.checked_duration_since(Instant::now()))
+            .filter(|remaining| !remaining.is_zero())
+    }
+
+    fn register_unlock_failure(&mut self, message: &str) {
+        self.failed_unlock_attempts = self.failed_unlock_attempts.saturating_add(1);
+        let cooldown = unlock_cooldown_duration(self.failed_unlock_attempts);
+        self.unlock_cooldown_until = Some(Instant::now() + cooldown);
+        self.set_status_err(format!(
+            "{message} Try again in {}.",
+            format_cooldown(cooldown)
+        ));
+    }
+
+    fn reset_pin_failures(&mut self) {
+        self.failed_unlock_attempts = 0;
+        self.unlock_cooldown_until = None;
+    }
+
+    fn reset_story_entry(&mut self) {
+        self.story_selections.clear();
+        if let Ok(order) = story::shuffled_catalog() {
+            self.display_order = order;
+        }
+    }
+
+    fn regenerate_story(&mut self) {
+        match story::generate() {
+            Ok(story) => {
+                self.pending_story = Some(story);
+            }
+            Err(err) => self.set_status_err(err),
+        }
+    }
+
+    pub(crate) fn begin_story_change(&mut self) {
+        if !self.can_change("Unlock parent mode before changing the Coffer Story.") {
+            return;
+        }
+        match story::generate() {
+            Ok(story) => {
+                self.pending_story = Some(story);
+                self.reset_story_entry();
+                self.parent_unlocked = false;
+                self.show_settings = false;
+                self.lock_mode = LockMode::ChangeReveal;
+                self.set_status_info("Cofferly generated a replacement Coffer Story.");
+            }
+            Err(err) => self.set_status_err(err),
+        }
+    }
+
+    pub(crate) fn print_recovery_card(&mut self) {
+        let Some(story) = self.pending_story else {
+            self.set_status_err("No Coffer Story is available to print.");
+            return;
+        };
+        let items = story
+            .iter()
+            .enumerate()
+            .map(|(index, id)| {
+                format!(
+                    "<li><strong>{}</strong> — {}</li>",
+                    index + 1,
+                    story::label(id).unwrap_or(id)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let html = format!(
+            "<!doctype html><meta charset=\"utf-8\"><title>Cofferly recovery card</title><h1>Cofferly recovery card</h1><p>This six-object Coffer Story unlocks your encrypted ledger. Store this card away from the computer and children. Without it, recovery is impossible.</p><ol>{items}</ol>"
+        );
+        let path = std::env::temp_dir().join("cofferly-recovery-card.html");
+        match std::fs::write(&path, html)
+            .and_then(|_| opener::open(&path).map_err(std::io::Error::other))
+        {
+            Ok(()) => self.set_status_ok("Opened recovery card. Store the printed copy safely."),
+            Err(err) => self.set_status_err(format!("Could not create recovery card: {err}")),
+        }
+    }
+
+    fn confirm_story_setup(&mut self) {
+        let Some(story) = self.pending_story else {
+            self.set_status_err("Could not create a Coffer Story.");
+            return;
+        };
+        let Ok(secret) = story::encode(&story) else {
+            self.set_status_err("Could not encode Coffer Story.");
+            return;
+        };
+        match self.lock_mode {
+            LockMode::SetupConfirm => {
+                self.session = SessionCrypto::establish(&secret).ok();
+                if self.session.is_none() {
+                    self.set_status_err("Could not secure the new Coffer Story.");
+                    return;
+                }
+                if let Err(err) = self.save_encrypted_data_and_refresh_ref(&secret) {
+                    self.session = None;
+                    self.set_status_err(format!("Could not save new Coffer Story: {err}"));
+                    return;
+                }
+                self.parent_unlocked = true;
+                self.lock_mode = LockMode::Story;
+                self.reset_story_entry();
+                self.reset_pin_failures();
+                self.set_status_ok("Coffer Story saved. Parent mode unlocked.");
+            }
+            LockMode::MigrateConfirm | LockMode::ChangeConfirm => {
+                let Some(session) = &mut self.session else {
+                    self.set_status_err(
+                        "Your unlock session expired. Unlock Cofferly again to retry.",
+                    );
+                    return;
+                };
+                if let Err(err) = session.rewrap_for_secret(&secret) {
+                    self.set_status_err(format!("Could not prepare migration: {err}"));
+                    return;
+                }
+                if let Err(err) = self.save_encrypted_data_and_refresh_ref(&secret) {
+                    // The atomic write left the v2 bytes untouched. Discard the
+                    // rewrapped in-memory session too, so retrying always starts
+                    // from the recoverable legacy envelope.
+                    self.session = None;
+                    self.lock_mode = if self.lock_mode == LockMode::MigrateConfirm {
+                        LockMode::LegacyPin
+                    } else {
+                        LockMode::Story
+                    };
+                    self.clear_pin_digits();
+                    self.reset_story_entry();
+                    self.set_status_err(format!(
+                        "Could not save the new Coffer Story: {err}. The existing encrypted file is unchanged; unlock it again to retry."
+                    ));
+                    return;
+                }
+                let was_migration = self.lock_mode == LockMode::MigrateConfirm;
+                self.data.parent_pin.clear();
+                self.parent_unlocked = true;
+                self.lock_mode = LockMode::Story;
+                self.reset_story_entry();
+                self.reset_pin_failures();
+                self.set_status_ok(if was_migration {
+                    "Coffer Story enrolled. Legacy PIN no longer unlocks this file."
+                } else {
+                    "Coffer Story changed. The previous story no longer unlocks this file."
+                });
+            }
+            _ => {}
+        }
+    }
+
+    fn submit_story(&mut self) {
+        if self.story_selections.len() != story::STORY_LENGTH {
+            return;
+        }
+        if let Some(remaining) = self.unlock_cooldown_remaining() {
+            self.reset_story_entry();
+            self.set_status_err(format!(
+                "Too many wrong attempts. Try again in {}.",
+                format_cooldown(remaining)
+            ));
+            return;
+        }
+        match self.lock_mode {
+            LockMode::SetupConfirm | LockMode::MigrateConfirm | LockMode::ChangeConfirm => {
+                if self
+                    .pending_story
+                    .as_ref()
+                    .is_some_and(|expected| expected.as_slice() == self.story_selections.as_slice())
+                {
+                    self.confirm_story_setup();
+                } else {
+                    self.reset_story_entry();
+                    self.register_unlock_failure("That was not the Coffer Story.");
+                }
+            }
+            LockMode::Story => {
+                let Ok(secret) = story::encode(&self.story_selections) else {
+                    self.reset_story_entry();
+                    self.register_unlock_failure("Invalid Coffer Story.");
+                    return;
+                };
+                let Some(raw) = self.raw_bytes.clone() else {
+                    return;
+                };
+                self.unlocking = true;
+                self.set_status_info("Unlocking…");
+                let (tx, rx) = std::sync::mpsc::channel();
+                self.unlock_rx = Some(rx);
+                std::thread::spawn(move || {
+                    let outcome = match crypto::decrypt(&raw, &secret) {
+                        Ok((plain, session)) => match serde_json::from_slice::<AppData>(&plain) {
+                            Ok(data) => data::normalize_app_data(data)
+                                .map(|data| (data, session))
+                                .ok_or_else(|| {
+                                    "Saved data is invalid after decryption.".to_owned()
+                                }),
+                            Err(_) => Err("Saved data is invalid after decryption.".to_owned()),
+                        },
+                        Err(_) => {
+                            Err("Wrong Coffer Story or data has been tampered with.".to_owned())
+                        }
+                    };
+                    let _ = tx.send(UnlockResult { outcome });
+                });
+            }
+            _ => {}
+        }
+    }
+
+    pub(crate) fn select_story_object(&mut self, id: &'static str) {
+        if self.unlocking
+            || self.unlock_cooldown_remaining().is_some()
+            || self.story_selections.len() >= story::STORY_LENGTH
+        {
+            return;
+        }
+        self.story_selections.push(id);
+        if self.story_selections.len() == story::STORY_LENGTH {
+            self.submit_story();
+        }
     }
 
     fn note_input_activity(&mut self, ctx: &egui::Context) {
@@ -490,40 +786,6 @@ impl CofferlyApp {
         }
 
         self.pending_pin_focus = Some((last_filled + 1).min(PIN_LENGTH - 1));
-    }
-
-    fn update_pin(&mut self) {
-        if !self.can_change("Unlock parent mode before changing the PIN.") {
-            return;
-        }
-        self.undo = None;
-        self.confirm_delete_wallet = false;
-
-        if !valid_pin(&self.new_pin_input) {
-            self.set_status_err("Choose exactly 4 digits for the parent PIN.");
-            return;
-        }
-
-        let mut updated_data = self.data.clone();
-        updated_data.parent_pin = self.new_pin_input.clone();
-        let new_pin = updated_data.parent_pin.clone();
-
-        // Re-wrap the existing data key under the new PIN (one Argon2id run).
-        if let Some(session) = &mut self.session {
-            if let Err(err) = session.rewrap_for_pin(&new_pin) {
-                self.set_status_err(format!("Could not update PIN: {err}"));
-                return;
-            }
-        }
-
-        match self.save_encrypted_data_and_refresh(&updated_data, &new_pin) {
-            Ok(()) => {
-                self.data = updated_data;
-                self.new_pin_input.clear();
-                self.set_status_ok("Parent PIN updated.");
-            }
-            Err(err) => self.set_status_err(format!("Could not save: {err}")),
-        }
     }
 
     fn add_entry(&mut self) {
@@ -801,19 +1063,17 @@ impl CofferlyApp {
 
         // Serialize from &self.data without an extra full clone of the tree for the
         // save path: we still need pin ownership, so clone only the pin string.
-        let pin = self.data.parent_pin.clone();
-        let save_result = self.save_encrypted_data_and_refresh_ref(&pin);
+        let secret = if self.session.is_some() {
+            String::new()
+        } else {
+            self.data.parent_pin.clone()
+        };
+        let save_result = self.save_encrypted_data_and_refresh_ref(&secret);
 
         match save_result {
             Ok(()) => self.set_status_ok(success_status),
             Err(err) => self.set_status_err(format!("Could not save: {err}")),
         }
-    }
-
-    fn save_encrypted_data_and_refresh(&mut self, data: &AppData, pin: &str) -> Result<(), String> {
-        let encrypted = save_encrypted(&self.data_path, data, pin, &mut self.session)?;
-        self.raw_bytes = Some(encrypted);
-        Ok(())
     }
 
     fn save_encrypted_data_and_refresh_ref(&mut self, pin: &str) -> Result<(), String> {
@@ -909,7 +1169,6 @@ impl eframe::App for CofferlyApp {
                             self.child_name_input = name;
                             self.starting_balance_input = format_money_input(bal);
                             self.new_child_name_input.clear();
-                            self.new_pin_input.clear();
                             self.confirm_delete_wallet = false;
                             self.show_settings = true;
                         }
@@ -1126,6 +1385,32 @@ pub(crate) fn pin_digit_id(index: usize) -> egui::Id {
     egui::Id::new(("parent_pin_digit", index))
 }
 
+fn unlock_cooldown_duration(failed_attempts: u32) -> Duration {
+    let index = failed_attempts
+        .saturating_sub(1)
+        .min(UNLOCK_COOLDOWN_MINUTES.len() as u32 - 1) as usize;
+    Duration::from_secs(UNLOCK_COOLDOWN_MINUTES[index] * 60)
+}
+
+fn format_cooldown(duration: Duration) -> String {
+    let seconds = duration
+        .as_secs()
+        .saturating_add(u64::from(duration.subsec_nanos() > 0))
+        .max(1);
+    if seconds >= 60 {
+        let minutes = seconds.div_ceil(60);
+        if minutes == 1 {
+            "1 minute".to_owned()
+        } else {
+            format!("{minutes} minutes")
+        }
+    } else if seconds == 1 {
+        "1 second".to_owned()
+    } else {
+        format!("{seconds} seconds")
+    }
+}
+
 fn load_lock_screen_image(ctx: &egui::Context) -> (Option<egui::TextureHandle>, egui::Color32) {
     let dyn_image = match image::load_from_memory(LOCK_SCREEN_IMAGE_BYTES) {
         Ok(img) => img,
@@ -1166,6 +1451,37 @@ fn load_open_coffer_image(ctx: &egui::Context) -> Option<egui::TextureHandle> {
     ))
 }
 
+fn load_story_icon_textures(ctx: &egui::Context) -> HashMap<&'static str, egui::TextureHandle> {
+    macro_rules! add_icons {
+        ($($id:literal),+ $(,)?) => {{
+            let mut textures = HashMap::new();
+            $(
+                let bytes = include_bytes!(concat!("../assets/story-icons/", $id, ".png"));
+                if let Ok(image) = image::load_from_memory(bytes) {
+                    let rgba = image.to_rgba8();
+                    let size = [rgba.width() as usize, rgba.height() as usize];
+                    textures.insert(
+                        $id,
+                        ctx.load_texture(
+                            concat!("coffer-story-icon-", $id),
+                            egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw()),
+                            egui::TextureOptions::LINEAR,
+                        ),
+                    );
+                }
+            )+
+            textures
+        }};
+    }
+
+    add_icons!(
+        "acorn", "anchor", "apple", "balloon", "book", "bridge", "candle", "castle", "cat",
+        "cloud", "compass", "crown", "diamond", "drum", "feather", "fish", "flower", "fox",
+        "globe", "sun", "hammer", "hat", "heart", "house", "key", "kite", "lantern", "leaf",
+        "lemon", "map",
+    )
+}
+
 #[cfg(test)]
 mod app_tests {
     use super::*;
@@ -1190,7 +1506,11 @@ mod app_tests {
             new_child_name_input: String::new(),
             pin_digits: Default::default(),
             pending_pin_focus: None,
-            new_pin_input: String::new(),
+            lock_mode: LockMode::Story,
+            pending_story: None,
+            story_selections: Vec::new(),
+            display_order: story::CATALOG.iter().map(|(id, _)| *id).collect(),
+            story_icon_textures: HashMap::new(),
             parent_unlocked: true,
             save_enabled: true,
             status: Status::info(String::new()),
@@ -1204,6 +1524,8 @@ mod app_tests {
             last_interaction: Instant::now(),
             unlocking: false,
             unlock_rx: None,
+            failed_unlock_attempts: 0,
+            unlock_cooldown_until: None,
         };
         (app, dir)
     }
@@ -1213,6 +1535,163 @@ mod app_tests {
         assert!(crypto::is_current_format(&raw));
         let (plaintext, _) = crypto::decrypt(&raw, pin).unwrap();
         serde_json::from_slice(&plaintext).unwrap()
+    }
+
+    fn test_story() -> [&'static str; story::STORY_LENGTH] {
+        ["acorn", "anchor", "apple", "balloon", "book", "bridge"]
+    }
+
+    #[test]
+    fn confirmed_first_run_story_is_saved_immediately_without_serializing_the_story() {
+        let (mut app, _dir) = test_app();
+        let selected = test_story();
+        app.parent_unlocked = false;
+        app.lock_mode = LockMode::SetupConfirm;
+        app.pending_story = Some(selected);
+        app.story_selections = selected.into();
+
+        app.submit_story();
+
+        let raw = std::fs::read(&app.data_path).unwrap();
+        assert_eq!(raw[0], crypto::STORY_VERSION);
+        let secret = story::encode(&selected).unwrap();
+        let (plain, _) = crypto::decrypt(&raw, &secret).unwrap();
+        assert!(!String::from_utf8_lossy(&plain).contains("coffer-story-v1:"));
+        assert!(app.parent_unlocked);
+    }
+
+    #[test]
+    fn all_six_story_selections_remain_visible_while_unlocking() {
+        let (mut app, _dir) = test_app();
+        let selected = test_story();
+        let secret = story::encode(&selected).unwrap();
+        let mut session = None;
+        app.raw_bytes = Some(
+            crypto::encrypt(
+                &serde_json::to_vec(&default_app_data()).unwrap(),
+                &secret,
+                &mut session,
+            )
+            .unwrap(),
+        );
+        app.parent_unlocked = false;
+        app.lock_mode = LockMode::Story;
+
+        for id in selected {
+            app.select_story_object(id);
+        }
+
+        assert!(app.unlocking);
+        assert_eq!(app.story_selections.as_slice(), selected);
+    }
+
+    #[test]
+    fn legacy_pin_migration_preserves_data_and_rejects_the_old_pin() {
+        let (mut app, _dir) = test_app();
+        let mut legacy_data = default_app_data();
+        legacy_data.wallets[0].child_name = "Kept through migration".to_owned();
+        let mut legacy_session = None;
+        let mut raw = crypto::encrypt(
+            &serde_json::to_vec(&legacy_data).unwrap(),
+            "1234",
+            &mut legacy_session,
+        )
+        .unwrap();
+        raw[0] = crypto::LEGACY_PIN_VERSION;
+        std::fs::write(&app.data_path, &raw).unwrap();
+        app.raw_bytes = Some(raw);
+        app.parent_unlocked = false;
+        app.lock_mode = LockMode::LegacyPin;
+        app.pin_digits = ["1".into(), "2".into(), "3".into(), "4".into()];
+
+        app.unlock_parent_sync();
+
+        assert_eq!(app.lock_mode, LockMode::MigrateReveal);
+        assert!(!app.parent_unlocked);
+        let selected = test_story();
+        app.pending_story = Some(selected);
+        app.lock_mode = LockMode::MigrateConfirm;
+        app.story_selections = selected.into();
+        app.submit_story();
+
+        let migrated = std::fs::read(&app.data_path).unwrap();
+        assert_eq!(migrated[0], crypto::STORY_VERSION);
+        assert!(crypto::decrypt(&migrated, "1234").is_err());
+        let secret = story::encode(&selected).unwrap();
+        let (plain, _) = crypto::decrypt(&migrated, &secret).unwrap();
+        let loaded = serde_json::from_slice::<AppData>(&plain).unwrap();
+        assert_eq!(loaded.wallets[0].child_name, "Kept through migration");
+    }
+
+    #[test]
+    fn changing_story_rewraps_the_existing_data_key() {
+        let (mut app, _dir) = test_app();
+        let old_story = test_story();
+        let old_secret = story::encode(&old_story).unwrap();
+        let mut original_session = None;
+        let original = crypto::encrypt(
+            &serde_json::to_vec(&default_app_data()).unwrap(),
+            &old_secret,
+            &mut original_session,
+        )
+        .unwrap();
+        std::fs::write(&app.data_path, &original).unwrap();
+        let (_, session) = crypto::decrypt(&original, &old_secret).unwrap();
+        app.raw_bytes = Some(original);
+        app.session = Some(session);
+        app.parent_unlocked = false;
+        app.lock_mode = LockMode::ChangeConfirm;
+        let replacement = ["crown", "diamond", "drum", "feather", "fish", "flower"];
+        app.pending_story = Some(replacement);
+        app.story_selections = replacement.into();
+
+        app.submit_story();
+
+        let changed = std::fs::read(&app.data_path).unwrap();
+        assert!(crypto::decrypt(&changed, &old_secret).is_err());
+        let replacement_secret = story::encode(&replacement).unwrap();
+        assert!(crypto::decrypt(&changed, &replacement_secret).is_ok());
+        assert!(app.parent_unlocked);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_legacy_migration_write_leaves_the_original_v2_file_recoverable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (mut app, dir) = test_app();
+        let mut session = None;
+        let mut original = crypto::encrypt(
+            &serde_json::to_vec(&default_app_data()).unwrap(),
+            "1234",
+            &mut session,
+        )
+        .unwrap();
+        original[0] = crypto::LEGACY_PIN_VERSION;
+        std::fs::write(&app.data_path, &original).unwrap();
+        app.raw_bytes = Some(original.clone());
+        app.parent_unlocked = false;
+        app.lock_mode = LockMode::LegacyPin;
+        app.pin_digits = ["1".into(), "2".into(), "3".into(), "4".into()];
+        app.unlock_parent_sync();
+        let selected = test_story();
+        app.pending_story = Some(selected);
+        app.lock_mode = LockMode::MigrateConfirm;
+        app.story_selections = selected.into();
+
+        let original_permissions = std::fs::metadata(dir.path()).unwrap().permissions();
+        let mut readonly = original_permissions.clone();
+        readonly.set_mode(0o500);
+        std::fs::set_permissions(dir.path(), readonly).unwrap();
+        app.submit_story();
+        std::fs::set_permissions(dir.path(), original_permissions).unwrap();
+
+        let after_failure = std::fs::read(&app.data_path).unwrap();
+        assert_eq!(after_failure, original);
+        assert!(crypto::decrypt(&after_failure, "1234").is_ok());
+        assert!(!app.parent_unlocked);
+        assert!(app.session.is_none());
+        assert_eq!(app.lock_mode, LockMode::LegacyPin);
     }
 
     #[test]
@@ -1262,7 +1741,7 @@ mod app_tests {
         assert_eq!(app.selected_wallet().child_name, "Encrypted wallet");
         assert!(app.pin_digits.iter().all(String::is_empty));
         assert_eq!(app.pending_pin_focus, Some(0));
-        assert_eq!(app.status.text, "Parent mode unlocked.");
+        assert_eq!(app.status.text, "Coffer Story unlocked.");
         assert_eq!(app.status.severity, StatusSeverity::Success);
     }
 
@@ -1284,8 +1763,52 @@ mod app_tests {
         assert!(app.session.is_none());
         assert_ne!(app.selected_wallet().child_name, "Secret wallet");
         assert!(app.pin_digits.iter().all(String::is_empty));
-        assert_eq!(app.status.text, "Wrong PIN or data has been tampered with.");
+        assert_eq!(
+            app.status.text,
+            "Wrong credential or data has been tampered with. Try again in 1 minute."
+        );
         assert_eq!(app.status.severity, StatusSeverity::Error);
+    }
+
+    #[test]
+    fn wrong_pin_attempts_receive_an_escalating_bounded_cooldown() {
+        assert_eq!(unlock_cooldown_duration(1), Duration::from_secs(60));
+        assert_eq!(unlock_cooldown_duration(2), Duration::from_secs(2 * 60));
+        assert_eq!(unlock_cooldown_duration(3), Duration::from_secs(5 * 60));
+        assert_eq!(unlock_cooldown_duration(4), Duration::from_secs(15 * 60));
+        assert_eq!(unlock_cooldown_duration(5), Duration::from_secs(30 * 60));
+        assert_eq!(unlock_cooldown_duration(6), Duration::from_secs(60 * 60));
+        assert_eq!(unlock_cooldown_duration(100), Duration::from_secs(60 * 60));
+    }
+
+    #[test]
+    fn active_pin_cooldown_blocks_even_the_correct_pin() {
+        let (mut app, _dir) = test_app();
+        app.parent_unlocked = false;
+        app.failed_unlock_attempts = 3;
+        app.unlock_cooldown_until = Some(Instant::now() + Duration::from_secs(5 * 60));
+        app.pin_digits = ["1".into(), "2".into(), "3".into(), "4".into()];
+
+        app.start_unlock();
+
+        assert!(!app.parent_unlocked);
+        assert!(app.pin_digits.iter().all(String::is_empty));
+        assert!(app.status.text.starts_with("Too many wrong PIN attempts."));
+    }
+
+    #[test]
+    fn successful_unlock_resets_pin_cooldown_state() {
+        let (mut app, _dir) = test_app();
+        app.parent_unlocked = false;
+        app.failed_unlock_attempts = 4;
+        app.unlock_cooldown_until = None;
+        app.pin_digits = ["1".into(), "2".into(), "3".into(), "4".into()];
+
+        app.unlock_parent_sync();
+
+        assert!(app.parent_unlocked);
+        assert_eq!(app.failed_unlock_attempts, 0);
+        assert!(app.unlock_cooldown_until.is_none());
     }
 
     #[test]
@@ -1385,26 +1908,6 @@ mod app_tests {
         assert!(!app.data_path.exists());
         assert_eq!(app.status.text, "Enter a valid amount, like 10 or 10.50.");
         assert_eq!(app.status.severity, StatusSeverity::Error);
-    }
-
-    #[test]
-    fn changing_pin_reencrypts_data_and_rejects_the_old_pin() {
-        let (mut app, _dir) = test_app();
-        // Establish a session with an initial save.
-        app.draft.kind = EntryKind::Deposit;
-        app.draft.description = "Seed".to_owned();
-        app.draft.amount = "1".to_owned();
-        app.add_entry();
-        assert!(app.session.is_some());
-
-        app.new_pin_input = "9876".to_owned();
-        app.update_pin();
-
-        assert_eq!(app.data.parent_pin, "9876");
-        assert!(app.new_pin_input.is_empty());
-        let raw = std::fs::read(&app.data_path).unwrap();
-        assert!(crypto::decrypt(&raw, "1234").is_err());
-        assert_eq!(saved_data(&app, "9876").parent_pin, "9876");
     }
 
     #[test]
