@@ -6,10 +6,11 @@ use chacha20poly1305::{
 use rand::{rngs::SysRng, TryRng};
 use zeroize::Zeroizing;
 
-/// Envelope format: `[version=2][salt 16][wrap_nonce 24][wrapped_key][payload_nonce 24][ciphertext]`.
-/// The PIN-derived key only wraps a random data key; the ledger is encrypted with that
+/// Envelope format: `[version][salt 16][wrap_nonce 24][wrapped_key][payload_nonce 24][ciphertext]`.
+/// The credential-derived key only wraps a random data key; the ledger is encrypted with that
 /// data key so saves after unlock do not re-run Argon2id.
-pub const ENCRYPTED_VERSION: u8 = 2;
+pub const LEGACY_PIN_VERSION: u8 = 2;
+pub const STORY_VERSION: u8 = 3;
 
 const SALT_LEN: usize = 16;
 const NONCE_LEN: usize = 24;
@@ -17,13 +18,13 @@ const KEY_LEN: usize = 32;
 /// XChaCha20-Poly1305 ciphertext overhead for a 32-byte key.
 const WRAPPED_KEY_LEN: usize = KEY_LEN + 16;
 
-/// Cached per unlock so saves avoid Argon2id. Dropped on lock / wrong PIN.
+/// Cached per unlock so saves avoid Argon2id. Dropped on lock / wrong credential.
 #[derive(Debug)]
 pub struct SessionCrypto {
     data_key: Zeroizing<[u8; KEY_LEN]>,
-    /// Salt + wrapped data key under the current PIN. Reused across saves with
-    /// the same PIN so encryption never re-derives the PIN key.
+    /// Salt + wrapped data key under the current credential. Reused across saves.
     envelope: EnvelopeHeader,
+    version: u8,
 }
 
 #[derive(Clone, Debug)]
@@ -33,10 +34,10 @@ struct EnvelopeHeader {
     wrapped_key: [u8; WRAPPED_KEY_LEN],
 }
 
-/// Derives a 32-byte key from the PIN using Argon2id.
+/// Derives a 32-byte key from the credential using Argon2id.
 /// The salt must be unique per file (stored alongside the ciphertext).
 /// The returned key is zeroized when dropped so it does not linger in memory.
-fn derive_key(pin: &str, salt: &[u8]) -> Result<Zeroizing<[u8; KEY_LEN]>, String> {
+fn derive_key(secret: &str, salt: &[u8]) -> Result<Zeroizing<[u8; KEY_LEN]>, String> {
     if salt.len() != SALT_LEN {
         return Err("invalid salt length".to_string());
     }
@@ -50,7 +51,7 @@ fn derive_key(pin: &str, salt: &[u8]) -> Result<Zeroizing<[u8; KEY_LEN]>, String
 
     let mut key = Zeroizing::new([0u8; KEY_LEN]);
     argon2
-        .hash_password_into(pin.as_bytes(), salt, key.as_mut())
+        .hash_password_into(secret.as_bytes(), salt, key.as_mut())
         .map_err(|e| format!("key derivation failed: {e}"))?;
 
     Ok(key)
@@ -85,7 +86,9 @@ fn decrypt_with_key(
     cipher
         .decrypt(nonce.into(), ciphertext)
         .map(Zeroizing::new)
-        .map_err(|_| "decryption failed — wrong PIN or data has been tampered with".to_string())
+        .map_err(|_| {
+            "decryption failed — wrong credential or data has been tampered with".to_string()
+        })
 }
 
 fn wrap_data_key(
@@ -113,9 +116,9 @@ fn unwrap_data_key(
     Ok(key)
 }
 
-fn build_envelope_header(pin: &str, data_key: &[u8; KEY_LEN]) -> Result<EnvelopeHeader, String> {
+fn build_envelope_header(secret: &str, data_key: &[u8; KEY_LEN]) -> Result<EnvelopeHeader, String> {
     let salt = random_bytes::<SALT_LEN>()?;
-    let pin_key = derive_key(pin, &salt)?;
+    let pin_key = derive_key(secret, &salt)?;
     let (wrap_nonce, wrapped_key) = wrap_data_key(&pin_key, data_key)?;
     Ok(EnvelopeHeader {
         salt,
@@ -125,16 +128,24 @@ fn build_envelope_header(pin: &str, data_key: &[u8; KEY_LEN]) -> Result<Envelope
 }
 
 impl SessionCrypto {
-    /// Fresh session: random data key wrapped under the PIN (runs Argon2id once).
-    pub fn establish(pin: &str) -> Result<Self, String> {
+    pub fn version(&self) -> u8 {
+        self.version
+    }
+    /// Fresh session: random data key wrapped under the credential (runs Argon2id once).
+    pub fn establish(secret: &str) -> Result<Self, String> {
         let data_key = Zeroizing::new(random_bytes::<KEY_LEN>()?);
-        let envelope = build_envelope_header(pin, &data_key)?;
-        Ok(Self { data_key, envelope })
+        let envelope = build_envelope_header(secret, &data_key)?;
+        Ok(Self {
+            data_key,
+            envelope,
+            version: STORY_VERSION,
+        })
     }
 
-    /// Re-wrap the existing data key under a new PIN (PIN change). Runs Argon2id once.
-    pub fn rewrap_for_pin(&mut self, pin: &str) -> Result<(), String> {
-        self.envelope = build_envelope_header(pin, &self.data_key)?;
+    /// Re-wrap the existing data key under a new credential. Runs Argon2id once.
+    pub fn rewrap_for_secret(&mut self, secret: &str) -> Result<(), String> {
+        self.envelope = build_envelope_header(secret, &self.data_key)?;
+        self.version = STORY_VERSION;
         Ok(())
     }
 
@@ -145,7 +156,7 @@ impl SessionCrypto {
         let mut out = Vec::with_capacity(
             1 + SALT_LEN + NONCE_LEN + WRAPPED_KEY_LEN + NONCE_LEN + ciphertext.len(),
         );
-        out.push(ENCRYPTED_VERSION);
+        out.push(self.version);
         out.extend_from_slice(&env.salt);
         out.extend_from_slice(&env.wrap_nonce);
         out.extend_from_slice(&env.wrapped_key);
@@ -157,9 +168,8 @@ impl SessionCrypto {
 
 /// Encrypts the plaintext using the current envelope format.
 ///
-/// When `session` already holds a key for the current PIN, only a fresh payload
-/// nonce is generated — Argon2id is not run. On first use (or after a PIN change
-/// that cleared the envelope), Argon2id runs once to wrap the data key.
+/// When `session` already holds a key for the current credential, only a fresh
+/// payload nonce is generated — Argon2id is not run.
 pub fn encrypt(
     plaintext: &[u8],
     pin: &str,
@@ -176,7 +186,10 @@ pub fn encrypt(
 
 /// True when the bytes begin with the current encrypted-file version.
 pub fn is_current_format(data: &[u8]) -> bool {
-    data.first().copied() == Some(ENCRYPTED_VERSION)
+    matches!(
+        data.first().copied(),
+        Some(LEGACY_PIN_VERSION | STORY_VERSION)
+    )
 }
 
 /// Decrypts a current-format blob and returns the plaintext plus a session ready
@@ -190,6 +203,7 @@ pub fn decrypt(encrypted: &[u8], pin: &str) -> Result<(Zeroizing<Vec<u8>>, Sessi
         return Err("truncated encrypted data".to_string());
     }
 
+    let version = encrypted[0];
     let mut offset = 1;
     let salt: [u8; SALT_LEN] = encrypted[offset..offset + SALT_LEN]
         .try_into()
@@ -224,6 +238,7 @@ pub fn decrypt(encrypted: &[u8], pin: &str) -> Result<(Zeroizing<Vec<u8>>, Sessi
             wrap_nonce,
             wrapped_key,
         },
+        version,
     };
 
     Ok((plaintext, session))
@@ -240,7 +255,7 @@ mod tests {
 
         let mut session = None;
         let encrypted = encrypt(data, pin, &mut session).unwrap();
-        assert_eq!(encrypted[0], ENCRYPTED_VERSION);
+        assert_eq!(encrypted[0], STORY_VERSION);
         let (decrypted, session2) = decrypt(&encrypted, pin).unwrap();
 
         assert_eq!(decrypted.as_slice(), data);
@@ -306,7 +321,7 @@ mod tests {
     #[test]
     fn truncated_payloads_fail_without_panicking() {
         for length in 0..(1 + SALT_LEN + NONCE_LEN + WRAPPED_KEY_LEN + NONCE_LEN) {
-            let truncated = vec![ENCRYPTED_VERSION; length];
+            let truncated = vec![STORY_VERSION; length];
             assert!(decrypt(&truncated, "1234").is_err());
         }
     }
@@ -316,7 +331,7 @@ mod tests {
         assert!(!is_current_format(&[]));
         assert!(!is_current_format(&[1]));
         assert!(!is_current_format(&[99]));
-        assert!(is_current_format(&[ENCRYPTED_VERSION]));
+        assert!(is_current_format(&[STORY_VERSION]));
         assert!(decrypt(&[1], "2468").is_err());
     }
 
@@ -328,7 +343,7 @@ mod tests {
         let (plain, mut session) = decrypt(&encrypted, "1111").unwrap();
         assert_eq!(plain.as_slice(), data);
 
-        session.rewrap_for_pin("2222").unwrap();
+        session.rewrap_for_secret("2222").unwrap();
         let mut session = Some(session);
         let rewrapped = encrypt(data, "2222", &mut session).unwrap();
         assert!(decrypt(&rewrapped, "1111").is_err());

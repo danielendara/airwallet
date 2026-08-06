@@ -7,17 +7,21 @@
 
 use eframe::egui;
 
-use crate::data::{valid_child_name, valid_pin, LedgerRowDate, LedgerSort};
+use crate::data::{valid_child_name, LedgerRowDate, LedgerSort};
 use crate::money::format_money;
 use crate::money::format_money_input;
 use crate::theme;
 use crate::theme::amount_color;
 use crate::theme::balance_color;
-use crate::CofferlyApp;
+use crate::{CofferlyApp, LockMode};
 use crate::{StatusSeverity, APP_NAME, PIN_LENGTH};
 
 impl CofferlyApp {
     pub fn lock_screen(&mut self, ui: &mut egui::Ui) {
+        if self.lock_mode != LockMode::LegacyPin {
+            self.story_lock_screen(ui);
+            return;
+        }
         egui::CentralPanel::default()
             .frame(egui::Frame::default().fill(self.lock_screen_bg))
             .show(ui, |ui| {
@@ -83,10 +87,23 @@ impl CofferlyApp {
                                     );
                                     ui.add_space(16.0);
 
-                                    if let Some(index) = self.pending_pin_focus.take() {
-                                        ui.memory_mut(|memory| {
-                                            memory.request_focus(crate::pin_digit_id(index))
-                                        });
+                                    let cooldown_remaining = self.unlock_cooldown_remaining();
+                                    if let Some(remaining) = cooldown_remaining {
+                                        ui.ctx().request_repaint_after(
+                                            remaining.min(std::time::Duration::from_secs(1)),
+                                        );
+                                    }
+                                    let pin_entry_enabled =
+                                        !self.unlocking && cooldown_remaining.is_none();
+
+                                    if pin_entry_enabled {
+                                        if let Some(index) = self.pending_pin_focus.take() {
+                                            ui.memory_mut(|memory| {
+                                                memory.request_focus(crate::pin_digit_id(index))
+                                            });
+                                        }
+                                    } else {
+                                        self.pending_pin_focus = Some(0);
                                     }
 
                                     let enter_pressed =
@@ -119,7 +136,8 @@ impl CofferlyApp {
                                                 .horizontal_align(egui::Align::Center)
                                                 .vertical_align(egui::Align::Center)
                                                 .char_limit(PIN_LENGTH)
-                                                .desired_width(54.0),
+                                                .desired_width(54.0)
+                                                .interactive(pin_entry_enabled),
                                             );
 
                                             if response.changed() {
@@ -150,8 +168,18 @@ impl CofferlyApp {
                                     });
 
                                     ui.add_space(4.0);
+                                    let pin_guidance = cooldown_remaining
+                                        .map(|remaining| {
+                                            format!(
+                                                "Try again in {}",
+                                                crate::format_cooldown(remaining)
+                                            )
+                                        })
+                                        .unwrap_or_else(|| {
+                                            "Gold coins fill as you type".to_owned()
+                                        });
                                     ui.label(
-                                        egui::RichText::new("Gold coins fill as you type")
+                                        egui::RichText::new(pin_guidance)
                                             .size(12.0)
                                             .strong()
                                             .color(theme::LOCK_TEXT_SECONDARY),
@@ -160,7 +188,7 @@ impl CofferlyApp {
                                     // Auto-submit as soon as the 4th digit lands (ATM / phone
                                     // lock convention). Enter and the Unlock button still work
                                     // for paste / partial flows.
-                                    let should_unlock = !self.unlocking
+                                    let should_unlock = pin_entry_enabled
                                         && self.parent_pin_complete()
                                         && (pin_changed || enter_pressed);
 
@@ -170,9 +198,11 @@ impl CofferlyApp {
 
                                     ui.add_space(16.0);
 
-                                    let unlock_enabled = !self.unlocking;
+                                    let unlock_enabled = pin_entry_enabled;
                                     let unlock_label = if self.unlocking {
                                         "Unlocking…"
+                                    } else if cooldown_remaining.is_some() {
+                                        "Please wait…"
                                     } else {
                                         "Unlock"
                                     };
@@ -218,7 +248,7 @@ impl CofferlyApp {
                             );
                             ui.label(
                                 egui::RichText::new(
-                                    "First run? Use 1234, then choose a new PIN in Settings.",
+                                    "Legacy file? Enter its existing PIN, then enroll a Coffer Story.",
                                 )
                                 .size(12.0)
                                 .color(theme::LOCK_TEXT_SECONDARY),
@@ -226,6 +256,134 @@ impl CofferlyApp {
                         });
                     });
             });
+    }
+
+    fn story_lock_screen(&mut self, ui: &mut egui::Ui) {
+        egui::CentralPanel::default().frame(egui::Frame::default().fill(self.lock_screen_bg)).show(ui, |ui| {
+            egui::ScrollArea::vertical().show(ui, |ui| ui.vertical_centered(|ui| {
+                ui.add_space(6.0);
+                if let Some(texture) = &self.lock_screen_image {
+                    let art_width = 260.0_f32.min(ui.available_width());
+                    // The source artwork has a blank strip below the chest. Crop it
+                    // from the display so the title and chooser sit closer together.
+                    let size = egui::vec2(art_width, art_width * 306.0 / 640.0);
+                    ui.add(
+                        egui::Image::new(texture)
+                            .fit_to_exact_size(size)
+                            .uv(egui::Rect::from_min_max(
+                                egui::Pos2::ZERO,
+                                egui::pos2(1.0, 306.0 / 360.0),
+                            ))
+                            .alt_text("A closed treasure coffer"),
+                    );
+                    ui.add_space(6.0);
+                }
+                ui.label(egui::RichText::new(APP_NAME).size(38.0).strong().color(theme::TEXT_PRIMARY));
+                ui.label(egui::RichText::new("A simple, private allowance wallet").size(16.0).color(theme::LOCK_TEXT_SECONDARY));
+                ui.add_space(14.0);
+                // This is a desktop-first screen: keep the chooser on a deliberate,
+                // stable column instead of letting the frame span the whole window.
+                egui::Frame::new().fill(theme::CARD_BG).stroke(egui::Stroke::new(1.0, theme::BORDER)).corner_radius(egui::CornerRadius::same(14)).inner_margin(egui::Margin::same(20)).show(ui, |ui| {
+                    ui.set_width(540.0);
+                    let is_reveal = matches!(self.lock_mode, LockMode::SetupReveal | LockMode::MigrateReveal | LockMode::ChangeReveal);
+                    let is_migration = matches!(self.lock_mode, LockMode::MigrateReveal | LockMode::MigrateConfirm);
+                    let is_change = matches!(self.lock_mode, LockMode::ChangeReveal | LockMode::ChangeConfirm);
+                    let heading = if is_reveal { if is_migration { "Move to Coffer Story" } else if is_change { "Your replacement Coffer Story" } else { "Your new Coffer Story" } } else if matches!(self.lock_mode, LockMode::SetupConfirm | LockMode::MigrateConfirm | LockMode::ChangeConfirm) { "Confirm your Coffer Story" } else { "Welcome back" };
+                    ui.label(egui::RichText::new(heading).size(20.0).strong().color(theme::TEXT_PRIMARY));
+                    if is_reveal {
+                        ui.label(egui::RichText::new("Cofferly generated this six-object key. Keep it private — it unlocks your encrypted ledger.").size(13.0).color(theme::LOCK_TEXT_SECONDARY));
+                        ui.add_space(12.0);
+                        if let Some(story) = self.pending_story {
+                            ui.horizontal_wrapped(|ui| for (index, id) in story.iter().enumerate() { ui.group(|ui| { ui.label(egui::RichText::new(format!("{}", index + 1)).strong().color(theme::GOLD_DARK)); ui.label(egui::RichText::new(crate::story::label(id).unwrap_or(id)).size(16.0).strong().color(theme::TEXT_PRIMARY)); }); });
+                        }
+                        ui.add_space(10.0);
+                        ui.label(egui::RichText::new("Write or print this recovery key and store it away from the computer. Without it, the encrypted ledger cannot be recovered.").size(12.0).color(theme::NEGATIVE));
+                        ui.horizontal(|ui| {
+                            if ui.button("Generate another story").clicked() { self.regenerate_story(); }
+                            if ui.button("Print recovery card").clicked() { self.print_recovery_card(); }
+                            if ui.add(egui::Button::new(egui::RichText::new("I wrote it down — continue").strong().color(egui::Color32::WHITE)).fill(theme::ACCENT_DARK)).clicked() { self.lock_mode = if is_migration { LockMode::MigrateConfirm } else if is_change { LockMode::ChangeConfirm } else { LockMode::SetupConfirm }; self.reset_story_entry(); }
+                        });
+                    } else {
+                        let cooldown = self.unlock_cooldown_remaining();
+                        if let Some(remaining) = cooldown { ui.ctx().request_repaint_after(remaining.min(std::time::Duration::from_secs(1))); ui.label(egui::RichText::new(format!("Try again in {}", crate::format_cooldown(remaining))).color(theme::NEGATIVE)); }
+                        else { ui.label(egui::RichText::new("Choose the six objects in order. The grid reshuffles each time; Cofferly never reveals partial correctness.").size(13.0).color(theme::LOCK_TEXT_SECONDARY)); }
+                        ui.add_space(8.0);
+                        // `horizontal_centered` expands to the remaining height in egui.
+                        // The desktop card is fixed-width, so center this known-width row
+                        // explicitly without creating another expanding region.
+                        let progress_width = 190.0;
+                        let progress_inset = ((ui.available_width() - progress_width) / 2.0).max(0.0);
+                        ui.horizontal(|ui| {
+                            ui.add_space(progress_inset);
+                            for index in 0..crate::story::STORY_LENGTH {
+                                let (mark, color) = if index < self.story_selections.len() {
+                                    ("●", theme::GOLD_DARK)
+                                } else {
+                                    ("○", theme::TEXT_SECONDARY)
+                                };
+                                ui.label(egui::RichText::new(mark).size(25.0).color(color));
+                            }
+                        });
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{} of {} selected",
+                                self.story_selections.len(),
+                                crate::story::STORY_LENGTH
+                            ))
+                            .size(12.0)
+                            .color(theme::TEXT_SECONDARY),
+                        );
+                        if ui.button("Clear").clicked() {
+                            self.reset_story_entry();
+                        }
+                        ui.add_space(8.0);
+                        egui::Grid::new("story_objects").num_columns(6).spacing([8.0, 8.0]).show(ui, |ui| {
+                            let order = self.display_order.clone();
+                            for (index, id) in order.iter().enumerate() {
+                                let enabled = cooldown.is_none() && !self.unlocking;
+                                let (rect, response) = ui.allocate_exact_size(
+                                    egui::vec2(82.0, 64.0),
+                                    egui::Sense::click(),
+                                );
+                                let label = crate::story::label(id).unwrap_or(id);
+                                let (fill, stroke, text_color) = if !enabled {
+                                    (theme::FAINT_BG, theme::BORDER, theme::TEXT_SECONDARY)
+                                } else if response.hovered() {
+                                    (theme::ACCENT_LIGHT, theme::ACCENT, theme::ACCENT_DARK)
+                                } else {
+                                    (theme::CARD_BG, theme::BORDER, theme::TEXT_PRIMARY)
+                                };
+                                ui.painter().rect(
+                                    rect,
+                                    egui::CornerRadius::same(8),
+                                    fill,
+                                    egui::Stroke::new(1.0, stroke),
+                                    egui::StrokeKind::Inside,
+                                );
+                                if let Some(texture) = self.story_icon_textures.get(id) {
+                                    draw_story_icon(ui, texture, response.rect);
+                                }
+                                ui.painter().text(
+                                    rect.center_bottom() - egui::vec2(0.0, 6.0),
+                                    egui::Align2::CENTER_BOTTOM,
+                                    label,
+                                    egui::FontId::proportional(11.0),
+                                    text_color,
+                                );
+                                response.clone().on_hover_text(format!("Coffer Story object: {label}"));
+                                if enabled && response.clicked() {
+                                    self.select_story_object(id);
+                                }
+                                if index % 6 == 5 { ui.end_row(); }
+                            }
+                        });
+                    }
+                });
+                ui.add_space(10.0);
+                ui.label(egui::RichText::new(&self.status.text).size(13.0).color(match self.status.severity { StatusSeverity::Error => theme::NEGATIVE, StatusSeverity::Success => theme::POSITIVE, StatusSeverity::Info => theme::LOCK_TEXT_SECONDARY }));
+                ui.label(egui::RichText::new("Local-only  •  No account  •  No cloud sync").size(12.0).color(theme::LOCK_TEXT_SECONDARY));
+            }));
+        });
     }
 
     pub fn wallet_header(&mut self, ui: &mut egui::Ui) {
@@ -492,33 +650,34 @@ impl CofferlyApp {
                         ui.add_space(12.0);
                         settings_section(
                             ui,
-                            "Parent PIN",
-                            "The PIN encrypts the local wallet file. Four digits deter casual access, not a determined attacker.",
+                            "Coffer Story",
+                            "Your generated six-object story encrypts the local wallet file. Keep its recovery copy away from this computer.",
                             theme::FAINT_BG,
                             egui::Stroke::new(1.0, theme::BORDER),
                             theme::TEXT_PRIMARY,
                             |ui| {
-                                settings_field_label(ui, "New 4-digit PIN");
-                                let pin_ready = valid_pin(&self.new_pin_input);
-                                settings_input_action_row(ui, 112.0, |ui, input_width| {
-                                    ui.add_sized(
-                                        [input_width, 38.0],
-                                        egui::TextEdit::singleline(&mut self.new_pin_input)
-                                            .password(true)
-                                            .hint_text("4 digits")
-                                            .char_limit(PIN_LENGTH),
-                                    );
-                                    if ui
-                                        .add_enabled(
-                                            pin_ready,
-                                            egui::Button::new("Update PIN")
-                                                .min_size(egui::vec2(112.0, 38.0)),
+                                ui.label(
+                                    egui::RichText::new(
+                                        "Cofferly does not keep a local bypass. If you lose the story and its recovery card, the encrypted ledger cannot be recovered.",
+                                    )
+                                    .size(12.0)
+                                    .color(theme::TEXT_SECONDARY),
+                                );
+                                ui.add_space(8.0);
+                                if ui
+                                    .add_sized(
+                                        [178.0, 38.0],
+                                        egui::Button::new(
+                                            egui::RichText::new("Change Coffer Story")
+                                                .strong()
+                                                .color(egui::Color32::WHITE),
                                         )
-                                        .clicked()
-                                    {
-                                        self.update_pin();
-                                    }
-                                });
+                                        .fill(theme::ACCENT_DARK),
+                                    )
+                                    .clicked()
+                                {
+                                    self.begin_story_change();
+                                }
                             },
                         );
 
@@ -875,6 +1034,19 @@ impl CofferlyApp {
             self.invalidate_ledger_cache();
         }
     }
+}
+
+fn draw_story_icon(ui: &egui::Ui, texture: &egui::TextureHandle, rect: egui::Rect) {
+    let icon_rect = egui::Rect::from_center_size(
+        rect.center_top() + egui::vec2(0.0, 17.0),
+        egui::vec2(26.0, 26.0),
+    );
+    ui.painter().image(
+        texture.id(),
+        icon_rect,
+        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+        egui::Color32::WHITE,
+    );
 }
 
 fn settings_modal_width(viewport_width: f32) -> f32 {

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Security:** Replaces new-install parent PINs with generated six-object Coffer Stories, encrypted-envelope v3, shuffled object grids, confirmation, and legacy PIN migration. Adds escalating 1-to-60-minute UI cooldowns after consecutive wrong unlock attempts without permanently locking out a parent.
 - Renames the encrypted data file from `data.json` to `vault.cofferly`. Existing current-format files are copied atomically, verified byte-for-byte, and retained untouched as a recovery backup.
 - **Security:** Removes plaintext and pre-Cofferly import paths. Unsupported data files now remain locked and are never overwritten automatically.
 - **Performance / crypto:** Envelope encryption derives Argon2id once per unlock and caches a data key for the session, so saves do not freeze the UI. PIN unlock runs Argon2id off the UI thread, and successful unlocks no longer rewrite an unchanged data file.
