@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- README: primary Download links to GitHub Releases; recovery-card guidance and PIN→Story upgrade notes.
+- Adds printable [docs/recovery-card.md](docs/recovery-card.md) template for Coffer Stories.
+- CI: multi-OS test/clippy/fmt workflow plus `cargo audit` on PRs and `main`.
+- Release workflow: compile Inno Setup installer, attach zip + Setup.exe to the GitHub Release.
+- deps: bump `eframe` / `egui_extras` to 0.36.
+
 ## 0.2.0 — 2026-08-06
 
 First feature release after the initial public cut: stronger parent unlock, vault file naming, and a pile of security/UX hardening.

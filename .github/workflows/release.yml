@@ -6,6 +6,9 @@ on:
       - "v*"
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   windows:
     name: Windows build
@@ -17,6 +20,8 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
 
       - name: Check formatting
         run: cargo fmt -- --check
@@ -31,9 +36,42 @@ jobs:
         shell: pwsh
         run: ./scripts/package-windows.ps1 -Version "${{ github.ref_name }}"
 
-      - name: Upload portable artifact
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          winget install --id JRSoftware.InnoSetup -e --accept-package-agreements --accept-source-agreements --disable-interactivity
+          $iscc = @(
+            "${env:LOCALAPPDATA}\Programs\Inno Setup 6\ISCC.exe",
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "${env:ProgramFiles}\Inno Setup 6\ISCC.exe"
+          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) { throw "ISCC.exe not found after Inno Setup install" }
+          echo "ISCC=$iscc" >> $env:GITHUB_ENV
+
+      - name: Compile Windows installer
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}" -replace '^v', ''
+          if ([string]::IsNullOrWhiteSpace($version) -or $version -eq '${{ github.ref_name }}') {
+            $version = (Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"').Matches.Groups[1].Value
+          }
+          & "$env:ISCC" "/DMyAppVersion=$version" installer\Cofferly.iss
+          Get-ChildItem dist\*.exe
+
+      - name: Upload portable + installer artifacts
         uses: actions/upload-artifact@v7
         with:
           name: Cofferly-windows-x64
-          path: dist/*.zip
+          path: |
+            dist/*.zip
+            dist/*Setup.exe
 
+      - name: Attach assets to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.zip
+            dist/*Setup.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

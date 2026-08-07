@@ -29,29 +29,38 @@ Cofferly starts with two neutral child wallets. Each wallet keeps a local ledger
 
 ## Download
 
-For a local build, the Windows executable is:
+**Latest release (recommended):** [Cofferly releases on GitHub](https://github.com/danielendara/cofferly/releases/latest)
 
-```text
-target\release\Cofferly.exe
-```
+| Asset | What it is |
+|-------|------------|
+| `Cofferly-*-windows-x64.zip` | Portable app — unzip and run `Cofferly.exe` |
+| `Cofferly-*-Setup.exe` | Windows installer (when published with the release) |
 
-For a portable release zip:
+No account, no cloud — data stays on your PC as an encrypted `vault.cofferly` file.
+
+### Build from source
 
 ```powershell
-.\scripts\package-windows.ps1 -Version 0.2.0
-```
+cargo build --release
+# → target\release\Cofferly.exe
 
-The zip will be created in `dist/`.
+.\scripts\package-windows.ps1 -Version 0.2.0
+# → dist\Cofferly-0.2.0-windows-x64.zip
+```
 
 ## Coffer Story
 
 Cofferly opens to a Coffer Story screen so kids cannot add, remove, rename, or print entries without a parent unlocking the app first.
 
-Cofferly generates a sequence of six distinct objects from a stable set of 30. Write the sequence down (or print a recovery card) and store it away from the computer, then confirm it by choosing the objects in order from the shuffled grid. Cofferly deliberately generates the story rather than allowing a human-chosen sequence.
+Cofferly generates a sequence of six distinct objects from a stable set of 30. **Write the sequence down** (or use a [recovery card](docs/recovery-card.md)) and store it **away from the computer**, then confirm it by choosing the objects in order from the shuffled grid. Cofferly deliberately generates the story rather than allowing a human-chosen sequence.
+
+> **There is no local bypass.** If both the story and your recovery copy are lost, the encrypted ledger **cannot be recovered**. Treat the story like a house key you cannot re-cut.
 
 The story is also the input used to encrypt the local data file. Six ordered, distinct objects from 30 provide 427,518,000 possible sequences (about 28.7 bits). This is a substantial improvement over a four-digit PIN, but it does not protect against someone watching the objects as they are entered.
 
-There is no local bypass: if both the story and recovery copy are lost, the encrypted ledger cannot be recovered. Existing installations with a PIN display a clearly labeled Legacy PIN screen and require Coffer Story enrollment after successful unlock.
+### Upgrading from a parent PIN
+
+Existing installations with a four-digit PIN show a clearly labeled **Legacy PIN** screen. After a successful PIN unlock, Cofferly enrolls a new Coffer Story (generate → write it down → confirm). The old PIN no longer works once migration finishes.
 
 
 ## Child Wallets

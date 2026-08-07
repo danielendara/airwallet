@@ -18,21 +18,29 @@ The portable zip will be created in `dist/`.
 
 The repository includes `installer/Cofferly.iss` for Inno Setup.
 
-1. Install Inno Setup.
-2. Build Cofferly with `cargo build --release`.
-3. Open `installer/Cofferly.iss`.
-4. Compile the installer.
+### CI (preferred)
 
-The installer output is written to `dist/`.
+Pushing a `v*` tag runs `.github/workflows/release.yml`, which builds the portable zip, compiles the installer with Inno Setup, and attaches both to the GitHub Release.
+
+### Local
+
+1. Install Inno Setup 6.
+2. Build Cofferly with `cargo build --release`.
+3. Compile with a version override if needed:
+
+```powershell
+& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DMyAppVersion=0.2.0 installer\Cofferly.iss
+```
+
+Output is written to `dist/` (`Cofferly-{version}-Setup.exe`).
 
 ## GitHub Release
 
-1. Update `Cargo.toml`, `README.md`, and this checklist if the version changes.
+1. Update `Cargo.toml`, `README.md`, installer default version, and this checklist if the version changes.
 2. Refresh the README screenshots in `docs/screenshots/` if the UI changed.
-3. Commit the release.
-4. Tag it, for example `v0.2.0`.
-5. Push the tag to GitHub.
-6. Attach the generated portable zip and installer to the GitHub Release.
+3. Commit the release and merge to `main`.
+4. Tag it, for example `v0.2.0`, and push the tag.
+5. Confirm the Release workflow attached `Cofferly-*-windows-x64.zip` and `Cofferly-*-Setup.exe`.
 
 ## Repository Controls
 

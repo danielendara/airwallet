@@ -10,6 +10,14 @@ Please do not open a public issue for vulnerabilities that could expose private 
 
 Report security concerns privately through GitHub's private vulnerability reporting if enabled, or contact the maintainer directly through GitHub.
 
+## Dependency advisories
+
+CI runs [`cargo audit`](https://github.com/rustsec/rustsec) on every pull request and push to `main` (see `.github/workflows/ci.yml`).
+
+- **Vulnerabilities** fail the audit job and should be fixed by updating the lockfile or direct dependencies before merge.
+- **Warnings** (for example unmaintained transitive crates such as `ttf-parser` via the font stack) may remain until an upstream egui/eframe release removes them. Do not suppress real vulnerabilities to clear noise; prefer upgrading the parent crate.
+- Locally: `cargo install cargo-audit && cargo audit`.
+
 ## Security Scope
 
 Cofferly uses a generated six-object Coffer Story as both a family-use editing lock and the input for local data-file encryption. It should not be treated as absolute security.
