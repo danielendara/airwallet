@@ -24,9 +24,21 @@ fn previous_data_path() -> PathBuf {
 }
 
 fn app_data_base() -> PathBuf {
+    // Maintainer / screenshot isolation — not used in normal family installs.
+    if let Ok(dir) = std::env::var("COFFERLY_DATA_DIR") {
+        let trimmed = dir.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed);
+        }
+    }
     dirs::data_local_dir()
         .or_else(|| std::env::current_dir().ok())
         .unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// Write vault bytes atomically (also used by the screenshot capture helper).
+pub fn save_encrypted_bytes(path: &Path, contents: &[u8]) -> Result<(), String> {
+    write_atomically(path, contents)
 }
 
 /// Prepare the current vault path without risking the previous encrypted file.

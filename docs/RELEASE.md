@@ -14,6 +14,22 @@ cargo build --release
 
 The portable zip will be created in `dist/`.
 
+## README screenshots
+
+Refresh the three README images after meaningful UI changes (requires a graphical desktop):
+
+```bash
+cargo build --release
+./scripts/capture-screenshots.sh
+```
+
+This runs Cofferly with `COFFERLY_CAPTURE` / `COFFERLY_DATA_DIR` (isolated vault) and overwrites:
+
+- `docs/screenshots/cofferly-story-unlock.png`
+- `docs/screenshots/cofferly-wallet-screen.png`
+- `docs/screenshots/cofferly-settings-screen.png`
+
+
 ## Windows Installer
 
 The repository includes `installer/Cofferly.iss` for Inno Setup.
