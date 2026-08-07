@@ -1,5 +1,5 @@
 #define MyAppName "Cofferly"
-#define MyAppVersion "0.1.0"
+#define MyAppVersion "0.2.0"
 #define MyAppPublisher "Cofferly contributors"
 #define MyAppExeName "Cofferly.exe"
 

@@ -9,7 +9,7 @@ cargo fmt -- --check
 cargo test
 cargo clippy --all-targets --all-features -- -D warnings
 cargo build --release
-.\scripts\package-windows.ps1 -Version 0.1.0
+.\scripts\package-windows.ps1 -Version 0.2.0
 ```
 
 The portable zip will be created in `dist/`.
@@ -30,7 +30,7 @@ The installer output is written to `dist/`.
 1. Update `Cargo.toml`, `README.md`, and this checklist if the version changes.
 2. Refresh the README screenshots in `docs/screenshots/` if the UI changed.
 3. Commit the release.
-4. Tag it, for example `v0.1.0`.
+4. Tag it, for example `v0.2.0`.
 5. Push the tag to GitHub.
 6. Attach the generated portable zip and installer to the GitHub Release.
 

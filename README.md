@@ -38,7 +38,7 @@ target\release\Cofferly.exe
 For a portable release zip:
 
 ```powershell
-.\scripts\package-windows.ps1 -Version 0.1.0
+.\scripts\package-windows.ps1 -Version 0.2.0
 ```
 
 The zip will be created in `dist/`.
