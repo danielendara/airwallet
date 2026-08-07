@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+mod capture;
 mod crypto;
 mod data;
 mod io;
@@ -39,14 +40,21 @@ use print_html::{ledger_file_stem, write_printable_ledger};
 use theme::{app_icon, balance_color, configure_style};
 
 fn main() -> eframe::Result<()> {
+    let capturing = std::env::var_os("COFFERLY_CAPTURE").is_some();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1080.0, 720.0])
+            .with_inner_size(if capturing {
+                // Tall enough for Settings sections used in README screenshots.
+                [1280.0, 1200.0]
+            } else {
+                [1080.0, 720.0]
+            })
             .with_min_inner_size([820.0, 560.0])
             .with_title(APP_NAME)
             .with_app_id("com.cofferly.app")
             .with_icon(app_icon()),
-        persist_window: true,
+        // Avoid restoring a previous window size over documentation captures.
+        persist_window: !capturing,
         ..Default::default()
     };
 
@@ -127,7 +135,7 @@ pub(crate) enum LockMode {
     ChangeConfirm,
 }
 
-struct CofferlyApp {
+pub(crate) struct CofferlyApp {
     data: AppData,
     raw_bytes: Option<Vec<u8>>,
     /// Present while parent mode is unlocked; enables saves without re-running Argon2id.
@@ -166,6 +174,8 @@ struct CofferlyApp {
     unlock_rx: Option<std::sync::mpsc::Receiver<UnlockResult>>,
     failed_unlock_attempts: u32,
     unlock_cooldown_until: Option<Instant>,
+    /// Maintainer-only README capture sequence (`COFFERLY_CAPTURE`).
+    capture: Option<capture::CaptureSession>,
 }
 
 struct UnlockResult {
@@ -281,6 +291,7 @@ impl CofferlyApp {
             unlock_rx: None,
             failed_unlock_attempts: 0,
             unlock_cooldown_until: None,
+            capture: capture::CaptureSession::from_env(),
         }
     }
 
@@ -1129,9 +1140,16 @@ impl eframe::App for CofferlyApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        // Capture before auto-lock so demo frames are not interrupted.
+        if let Some(mut session) = self.capture.take() {
+            session.tick(self, &ctx);
+            self.capture = Some(session);
+        }
         self.note_input_activity(&ctx);
         self.poll_unlock(&ctx);
-        self.auto_lock_if_idle(&ctx);
+        if self.capture.is_none() {
+            self.auto_lock_if_idle(&ctx);
+        }
 
         if !self.parent_unlocked {
             self.lock_screen(ui);
@@ -1548,6 +1566,7 @@ mod app_tests {
             unlock_rx: None,
             failed_unlock_attempts: 0,
             unlock_cooldown_until: None,
+            capture: None,
         };
         (app, dir)
     }

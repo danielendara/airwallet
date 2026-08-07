@@ -7,6 +7,8 @@
 - CI: multi-OS test/clippy/fmt workflow plus `cargo audit` on PRs and `main`.
 - Release workflow: compile Inno Setup installer, attach zip + Setup.exe to the GitHub Release.
 - deps: bump `eframe` / `egui_extras` to 0.36.
+- Refreshes README screenshots for Coffer Story unlock, sample ledger, and Settings (including Change Coffer Story); removes obsolete PIN-screen asset.
+- Adds maintainer screenshot helper (`scripts/capture-screenshots.sh` + `COFFERLY_CAPTURE` env).
 
 ## 0.2.0 — 2026-08-06
 
