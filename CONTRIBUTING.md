@@ -15,17 +15,21 @@ Cofferly is a maintainer-led family app. The repository is public so people can 
 
 ```powershell
 cargo fmt -- --check
+cargo clippy --all-targets -- -D warnings
 cargo test
+cargo audit
 cargo build --release
 ```
 
 If `cargo` is not on PATH on Windows, add `%USERPROFILE%\.cargo\bin` to PATH or run Cargo from that folder.
 
+CI runs the same checks on Linux, macOS, and Windows (plus `cargo audit` on Ubuntu).
+
 ## Pull Request Checklist
 
-- Formatting passes.
+- Formatting and clippy pass.
 - Tests pass.
-- The app still opens to the parent PIN screen.
+- The app still opens to the Coffer Story (or Legacy PIN migration) unlock screen.
 - Public files do not contain real child names or private family data.
 - README or release docs are updated when behavior changes.
 
