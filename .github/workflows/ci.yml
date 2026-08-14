@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main]
 
+# Least privilege for a public repo. Jobs that need more must opt in.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
