@@ -71,11 +71,13 @@ After unlocking parent mode, open **Settings** to rename the selected wallet, up
 
 Use **Remove latest entry** in Settings to undo the most recent ledger entry for the selected wallet. The app offers a short undo window before the next change.
 
-## Printing
+## Printing and CSV export
 
 Use **Print this wallet** to print the selected child's ledger, or **Print all wallets** to print every child wallet together.
 
-Cofferly writes a temporary printable HTML file (in your OS temp folder) and opens it in your browser. Previous print files are cleaned up when the app starts.
+Use **Export this wallet CSV** or **Export all wallets CSV** for a spreadsheet backup. Amounts are plain decimals (no `$`) so Excel, Numbers, and LibreOffice can sum them.
+
+Cofferly writes these files in your OS temp folder and opens them. Previous Cofferly HTML and CSV temp files are cleaned up when the app starts. Nothing is uploaded.
 
 ## Windows Installer
 

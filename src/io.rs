@@ -176,7 +176,7 @@ pub fn cleanup_temp_print_artifacts() {
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
-        if name.starts_with("cofferly-") && name.ends_with(".html") {
+        if name.starts_with("cofferly-") && (name.ends_with(".html") || name.ends_with(".csv")) {
             let _ = fs::remove_file(path);
         }
     }
