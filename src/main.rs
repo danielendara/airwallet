@@ -16,6 +16,7 @@ mod theme;
 mod views;
 
 pub const APP_NAME: &str = "Cofferly";
+pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const DATA_FILE_NAME: &str = "vault.cofferly";
 const PREVIOUS_DATA_FILE_NAME: &str = "data.json";
 const PIN_LENGTH: usize = 4;
@@ -24,6 +25,8 @@ const OPEN_COFFER_IMAGE_BYTES: &[u8] = include_bytes!("../assets/cofferly-open.p
 /// Forgiving default so parents are not locked mid-chore; still protects a
 /// shared family PC left open.
 const AUTO_LOCK_AFTER: Duration = Duration::from_secs(10 * 60);
+/// Show a quiet countdown for the last two minutes before auto-lock.
+const AUTO_LOCK_WARN: Duration = Duration::from_secs(2 * 60);
 /// Escalating delays after consecutive wrong PINs. This slows automated UI
 /// guessing without creating a permanent lockout for a parent.
 const UNLOCK_COOLDOWN_MINUTES: [u64; 6] = [1, 2, 5, 15, 30, 60];
@@ -31,8 +34,8 @@ const UI_STATE_KEY: &str = "cofferly/ui_state";
 
 use crypto::SessionCrypto;
 use data::{
-    default_app_data, valid_cents, valid_child_name, valid_description, AppData, Entry, EntryKind,
-    LedgerSort, OwnedLedgerRow, Wallet,
+    default_app_data, format_ledger_date, parse_ledger_date, valid_cents, valid_child_name,
+    valid_description, AppData, Entry, EntryKind, LedgerSort, OwnedLedgerRow, Wallet,
 };
 use io::{cleanup_temp_print_artifacts, data_path, prepare_data_vault, save_encrypted};
 use money::{format_money, format_money_input, parse_dollars_to_cents};
@@ -70,6 +73,18 @@ struct EntryDraft {
     description: String,
     amount: String,
     kind: EntryKind,
+    date_input: String,
+}
+
+impl EntryDraft {
+    fn new() -> Self {
+        Self {
+            description: String::new(),
+            amount: String::new(),
+            kind: EntryKind::Deduction,
+            date_input: format_ledger_date(Local::now().date_naive()),
+        }
+    }
 }
 
 /// The entry most recently removed from a wallet, held briefly so the user can
@@ -259,11 +274,7 @@ impl CofferlyApp {
             selected_wallet,
             ledger_sort,
             ledger_cache: None,
-            draft: EntryDraft {
-                description: String::new(),
-                amount: String::new(),
-                kind: EntryKind::Deduction,
-            },
+            draft: EntryDraft::new(),
             starting_balance_input: String::new(),
             child_name_input: String::new(),
             new_child_name_input: String::new(),
@@ -531,7 +542,18 @@ impl CofferlyApp {
         }
 
         let remaining = AUTO_LOCK_AFTER.saturating_sub(idle);
-        ctx.request_repaint_after(remaining);
+        if remaining <= AUTO_LOCK_WARN {
+            ctx.request_repaint_after(Duration::from_secs(1));
+        } else {
+            ctx.request_repaint_after(remaining.saturating_sub(AUTO_LOCK_WARN));
+        }
+    }
+
+    fn auto_lock_remaining(&self) -> Option<Duration> {
+        if !self.parent_unlocked {
+            return None;
+        }
+        Some(AUTO_LOCK_AFTER.saturating_sub(self.last_interaction.elapsed()))
     }
 
     fn touch_interaction(&mut self) {
@@ -845,6 +867,18 @@ impl CofferlyApp {
             return;
         }
 
+        let date = match parse_ledger_date(&self.draft.date_input) {
+            Ok(date) => date,
+            Err(err) => {
+                self.set_status_err(err);
+                return;
+            }
+        };
+        if date > Local::now().date_naive() {
+            self.set_status_err("Use today or an earlier date.");
+            return;
+        }
+
         let action = match self.draft.kind {
             EntryKind::Deposit => "Added",
             EntryKind::Deduction => "Deducted",
@@ -857,7 +891,7 @@ impl CofferlyApp {
         let wallet_name = self.selected_wallet().child_name.clone();
 
         self.selected_wallet_mut().entries.push(Entry {
-            date: Local::now().date_naive(),
+            date,
             description: description.clone(),
             amount_cents: signed_amount,
         });
@@ -877,6 +911,7 @@ impl CofferlyApp {
 
         self.draft.description.clear();
         self.draft.amount.clear();
+        self.draft.date_input = format_ledger_date(Local::now().date_naive());
         self.invalidate_ledger_cache();
         self.save_with_success(status);
     }
@@ -1177,12 +1212,26 @@ impl eframe::App for CofferlyApp {
                         .corner_radius(egui::CornerRadius::same(12))
                         .inner_margin(egui::Margin::symmetric(10, 5))
                         .show(ui, |ui| {
-                            ui.label(
-                                egui::RichText::new("Parent mode unlocked")
-                                    .size(11.0)
-                                    .strong()
-                                    .color(theme::ACCENT_DARK),
-                            );
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    egui::RichText::new("Parent mode unlocked")
+                                        .size(11.0)
+                                        .strong()
+                                        .color(theme::ACCENT_DARK),
+                                );
+                                if let Some(remaining) = self.auto_lock_remaining() {
+                                    if remaining <= AUTO_LOCK_WARN && !remaining.is_zero() {
+                                        ui.label(
+                                            egui::RichText::new(format!(
+                                                "· Locks in {}",
+                                                format_cooldown(remaining)
+                                            ))
+                                            .size(11.0)
+                                            .color(theme::TEXT_SECONDARY),
+                                        );
+                                    }
+                                }
+                            });
                         });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui
@@ -1524,6 +1573,7 @@ fn load_story_icon_textures(ctx: &egui::Context) -> HashMap<&'static str, egui::
 #[cfg(test)]
 mod app_tests {
     use super::*;
+    use chrono::NaiveDate;
     use tempfile::{tempdir, TempDir};
 
     fn test_app() -> (CofferlyApp, TempDir) {
@@ -1535,11 +1585,7 @@ mod app_tests {
             selected_wallet: 0,
             ledger_sort: LedgerSort::NewestFirst,
             ledger_cache: None,
-            draft: EntryDraft {
-                description: String::new(),
-                amount: String::new(),
-                kind: EntryKind::Deduction,
-            },
+            draft: EntryDraft::new(),
             starting_balance_input: String::new(),
             child_name_input: String::new(),
             new_child_name_input: String::new(),
@@ -2006,5 +2052,49 @@ mod app_tests {
         app.auto_lock_if_idle(&ctx);
         assert!(!app.parent_unlocked);
         assert!(app.status.text.contains("inactivity"));
+    }
+
+    #[test]
+    fn auto_lock_warns_in_the_last_two_minutes() {
+        let (mut app, _dir) = test_app();
+        app.parent_unlocked = true;
+        app.last_interaction = Instant::now() - AUTO_LOCK_AFTER + Duration::from_secs(90);
+        let remaining = app.auto_lock_remaining().expect("unlocked");
+        assert!(remaining <= AUTO_LOCK_WARN);
+        assert!(!remaining.is_zero());
+        let ctx = egui::Context::default();
+        app.auto_lock_if_idle(&ctx);
+        assert!(app.parent_unlocked);
+    }
+
+    #[test]
+    fn add_entry_can_use_an_earlier_date() {
+        let (mut app, _dir) = test_app();
+        app.draft.kind = EntryKind::Deposit;
+        app.draft.description = "Backdated allowance".to_owned();
+        app.draft.amount = "5".to_owned();
+        app.draft.date_input = "07/01/2026".to_owned();
+
+        app.add_entry();
+
+        assert_eq!(
+            app.selected_wallet().entries[0].date,
+            NaiveDate::from_ymd_opt(2026, 7, 1).unwrap()
+        );
+        assert!(app.status.text.contains("Added $5.00"));
+    }
+
+    #[test]
+    fn add_entry_rejects_a_future_date() {
+        let (mut app, _dir) = test_app();
+        app.draft.kind = EntryKind::Deposit;
+        app.draft.description = "Tomorrow".to_owned();
+        app.draft.amount = "5".to_owned();
+        app.draft.date_input = "12/31/2099".to_owned();
+
+        app.add_entry();
+
+        assert!(app.selected_wallet().entries.is_empty());
+        assert_eq!(app.status.text, "Use today or an earlier date.");
     }
 }

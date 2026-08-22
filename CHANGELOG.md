@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Settings shows the Cofferly version next to the save reminder.
+- Money amounts use thousands separators (`$1,234.56`); typed input is unchanged.
+- Transactions can be backdated (MM/DD/YYYY, default today; future dates are rejected).
+- Parent mode shows a quiet “Locks in …” countdown for the last two minutes of inactivity.
+- README: macOS/Linux `cargo run` / `cargo build --release` notes.
 - README: primary Download links to GitHub Releases; recovery-card guidance and PIN→Story upgrade notes.
 - Adds printable [docs/recovery-card.md](docs/recovery-card.md) template for Coffer Stories.
 - CI: multi-OS test/clippy/fmt workflow plus `cargo audit` on PRs and `main`.

@@ -60,10 +60,33 @@ pub fn parse_dollars_to_cents(input: &str) -> Result<i64, String> {
     }
 }
 
+fn group_thousands(mut n: u64) -> String {
+    if n < 1000 {
+        return n.to_string();
+    }
+
+    let mut groups = Vec::new();
+    while n >= 1000 {
+        groups.push(format!("{:03}", n % 1000));
+        n /= 1000;
+    }
+
+    let mut grouped = n.to_string();
+    for group in groups.into_iter().rev() {
+        grouped.push(',');
+        grouped.push_str(&group);
+    }
+    grouped
+}
+
 pub fn format_money(cents: i64) -> String {
     let sign = if cents < 0 { "-" } else { "" };
     let absolute = cents.unsigned_abs();
-    format!("{sign}${}.{:02}", absolute / 100, absolute % 100)
+    format!(
+        "{sign}${}.{:02}",
+        group_thousands(absolute / 100),
+        absolute % 100
+    )
 }
 
 pub fn format_money_input(cents: i64) -> String {
@@ -113,11 +136,13 @@ mod tests {
     fn formats_money() {
         assert_eq!(format_money(19400), "$194.00");
         assert_eq!(format_money(-500), "-$5.00");
+        assert_eq!(format_money(123_456), "$1,234.56");
+        assert_eq!(format_money(-100_000_000), "-$1,000,000.00");
     }
 
     #[test]
     fn formats_minimum_i64_without_panicking() {
-        assert_eq!(format_money(i64::MIN), "-$92233720368547758.08");
+        assert_eq!(format_money(i64::MIN), "-$92,233,720,368,547,758.08");
         // Input format preserves the sign instead of dropping it.
         assert_eq!(format_money_input(i64::MIN), "-92233720368547758.08");
         assert_eq!(format_money_input(-500), "-5.00");

@@ -91,17 +91,29 @@ Then open `installer/Cofferly.iss` in Inno Setup and compile the installer. The 
 
 ## Development
 
-Install Rust from [rustup.rs](https://rustup.rs), then run:
+Install Rust from [rustup.rs](https://rustup.rs).
+
+**Windows**
 
 ```powershell
 cargo run
-```
-
-To create a release build:
-
-```powershell
 cargo build --release
 ```
+
+**macOS / Linux**
+
+```bash
+cargo run
+cargo build --release
+```
+
+On Debian/Ubuntu, install GUI packages before the first build:
+
+```bash
+sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev libgtk-3-dev
+```
+
+The binary is `target/release/Cofferly` (or `Cofferly.exe` on Windows). There is no macOS/Linux installer yet; run the release binary from that path.
 
 The app stores data locally as `vault.cofferly` in your operating system's Cofferly app data folder.
 
