@@ -15,11 +15,13 @@ Cofferly is a maintainer-led family app. The repository is public so people can 
 
 ```powershell
 cargo fmt -- --check
-cargo clippy --all-targets -- -D warnings
-cargo test
+cargo clippy --all-targets --locked -- -D warnings
+cargo test --locked
 cargo audit
-cargo build --release
+cargo build --release --locked
 ```
+
+Do not commit `vault.cofferly`, `data.json`, or `.env` files. CI runs `scripts/check-vault-paths.sh` on Linux.
 
 If `cargo` is not on PATH on Windows, add `%USERPROFILE%\.cargo\bin` to PATH or run Cargo from that folder.
 

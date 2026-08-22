@@ -1,1 +1,3 @@
+# Maintainer owns every path. Public contributors still send PRs;
+# CODEOWNERS does not block merges unless a ruleset requires reviews.
 * @danielendara

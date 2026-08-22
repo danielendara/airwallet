@@ -8,7 +8,7 @@ Cofferly is early-stage software. Security fixes target the latest released vers
 
 Please do not open a public issue for vulnerabilities that could expose private family data or weaken parent-mode behavior.
 
-Report security concerns privately through GitHub's private vulnerability reporting if enabled, or contact the maintainer directly through GitHub.
+Report security concerns privately through [GitHub private vulnerability reporting](https://github.com/danielendara/cofferly/security/advisories/new). Do not open a public issue for those reports.
 
 ## Dependency advisories
 

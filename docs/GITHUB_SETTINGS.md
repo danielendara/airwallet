@@ -13,7 +13,7 @@ Cofferly is **public**. You remain the only admin. Production releases stay on G
 ## Applied on GitHub
 
 - **Default branch:** `main`
-- **Merges:** squash only; delete head branch on merge
+- **Merges:** squash only (repo setting + ruleset); delete head branch on merge
 - **Homepage:** [latest release](https://github.com/danielendara/cofferly/releases/latest)
 - **Wiki / Projects:** off
 - **Actions:** default `contents: read`; workflows cannot approve PRs
@@ -28,8 +28,10 @@ Cofferly is **public**. You remain the only admin. Production releases stay on G
     - `Test (windows-latest)`
     - `Test (macos-latest)`
     - `Security audit`
+  - Allowed merge method: squash only
   - No force-push, no deleting `main`
   - Bypass actor: you (emergency only)
+- **CI:** `persist-credentials: false` on checkout; `cargo --locked`; Linux job also runs `scripts/check-vault-paths.sh` so `vault.cofferly` / `data.json` / `.env` cannot be tracked
 
 Classic branch protection was replaced by this ruleset so required checks actually match the CI job names.
 

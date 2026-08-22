@@ -4,3 +4,14 @@
 /.vscode/
 *.pdb
 *.exe
+.DS_Store
+
+# Local family vaults and env files — never commit
+vault.cofferly
+**/vault.cofferly
+data.json
+**/data.json
+.env
+.env.*
+**/.env
+**/.env.*
