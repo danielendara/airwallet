@@ -54,9 +54,20 @@ impl LedgerRowDate {
     pub fn label(self) -> String {
         match self {
             Self::Start => "Start".to_owned(),
-            Self::Entry(date) => date.format("%m/%d/%Y").to_string(),
+            Self::Entry(date) => format_ledger_date(date),
         }
     }
+}
+
+pub fn format_ledger_date(date: NaiveDate) -> String {
+    date.format("%m/%d/%Y").to_string()
+}
+
+pub fn parse_ledger_date(input: &str) -> Result<NaiveDate, String> {
+    let trimmed = input.trim();
+    NaiveDate::parse_from_str(trimmed, "%m/%d/%Y")
+        .or_else(|_| NaiveDate::parse_from_str(trimmed, "%Y-%m-%d"))
+        .map_err(|_| "Enter a date like 08/21/2026.".to_owned())
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -290,6 +301,15 @@ mod tests {
             LedgerRowDate::Entry(NaiveDate::from_ymd_opt(2026, 7, 11).unwrap()).label(),
             "07/11/2026"
         );
+        assert_eq!(
+            parse_ledger_date("07/11/2026").unwrap(),
+            NaiveDate::from_ymd_opt(2026, 7, 11).unwrap()
+        );
+        assert_eq!(
+            parse_ledger_date("2026-07-11").unwrap(),
+            NaiveDate::from_ymd_opt(2026, 7, 11).unwrap()
+        );
+        assert!(parse_ledger_date("not a date").is_err());
     }
 
     #[test]

@@ -14,7 +14,7 @@ use crate::theme;
 use crate::theme::amount_color;
 use crate::theme::balance_color;
 use crate::{CofferlyApp, LockMode};
-use crate::{StatusSeverity, APP_NAME, PIN_LENGTH};
+use crate::{StatusSeverity, APP_NAME, APP_VERSION, PIN_LENGTH};
 
 impl CofferlyApp {
     pub fn lock_screen(&mut self, ui: &mut egui::Ui) {
@@ -821,9 +821,11 @@ impl CofferlyApp {
                     ui.vertical(|ui| {
                         ui.set_max_width((modal_width - 150.0).max(220.0));
                         ui.label(
-                            egui::RichText::new("Changes save automatically on this device")
-                                .size(11.0)
-                                .color(theme::TEXT_SECONDARY),
+                            egui::RichText::new(format!(
+                                "Cofferly {APP_VERSION} · Changes save automatically on this device"
+                            ))
+                            .size(11.0)
+                            .color(theme::TEXT_SECONDARY),
                         );
                         ui.label(
                             egui::RichText::new(format!("{prefix}{}", self.status.text))
@@ -923,11 +925,24 @@ impl CofferlyApp {
                     egui::TextEdit::singleline(&mut self.draft.amount).hint_text("$0.00"),
                 );
 
+                ui.label(
+                    egui::RichText::new("Date")
+                        .size(11.0)
+                        .strong()
+                        .color(theme::TEXT_PRIMARY),
+                );
+                let date_response = ui.add_sized(
+                    [ui.available_width(), 36.0],
+                    egui::TextEdit::singleline(&mut self.draft.date_input).hint_text("MM/DD/YYYY"),
+                );
+
                 let enter_submit = ui.input(|i| i.key_pressed(egui::Key::Enter))
                     && (desc_response.lost_focus()
                         || amount_response.lost_focus()
+                        || date_response.lost_focus()
                         || desc_response.has_focus()
-                        || amount_response.has_focus());
+                        || amount_response.has_focus()
+                        || date_response.has_focus());
 
                 let action = match self.draft.kind {
                     crate::data::EntryKind::Deposit => "Add money",
