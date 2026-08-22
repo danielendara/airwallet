@@ -25,6 +25,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Block tracked vaults / env files
+        if: runner.os == 'Linux'
+        run: |
+          chmod +x scripts/check-vault-paths.sh
+          ./scripts/check-vault-paths.sh
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -41,13 +49,15 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Format
+        if: runner.os == 'Linux'
         run: cargo fmt -- --check
 
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        if: runner.os == 'Linux'
+        run: cargo clippy --all-targets --locked -- -D warnings
 
       - name: Test
-        run: cargo test
+        run: cargo test --locked
 
   audit:
     name: Security audit
@@ -58,6 +68,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
