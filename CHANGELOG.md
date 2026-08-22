@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- CSV export for one wallet or all wallets (temp file, local open, no cloud).
 - Settings shows the Cofferly version next to the save reminder.
 - Money amounts use thousands separators (`$1,234.56`); typed input is unchanged.
 - Transactions can be backdated (MM/DD/YYYY, default today; future dates are rejected).

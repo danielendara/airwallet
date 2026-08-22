@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 mod capture;
 mod crypto;
 mod data;
+mod export_csv;
 mod io;
 mod money;
 mod print_html;
@@ -37,6 +38,7 @@ use data::{
     default_app_data, format_ledger_date, parse_ledger_date, valid_cents, valid_child_name,
     valid_description, AppData, Entry, EntryKind, LedgerSort, OwnedLedgerRow, Wallet,
 };
+use export_csv::write_csv_ledger;
 use io::{cleanup_temp_print_artifacts, data_path, prepare_data_vault, save_encrypted};
 use money::{format_money, format_money_input, parse_dollars_to_cents};
 use print_html::{ledger_file_stem, write_printable_ledger};
@@ -1079,7 +1081,7 @@ impl CofferlyApp {
         }
 
         match write_printable_ledger(&self.print_path(false), &[self.selected_wallet().clone()]) {
-            Ok(path) => self.open_printable_file(&path),
+            Ok(path) => self.open_export_file(&path, "printable ledger"),
             Err(err) => self.set_status_err(format!("Could not create printable ledger: {err}")),
         }
     }
@@ -1091,17 +1093,41 @@ impl CofferlyApp {
         }
 
         match write_printable_ledger(&self.print_path(true), &self.data.wallets) {
-            Ok(path) => self.open_printable_file(&path),
+            Ok(path) => self.open_export_file(&path, "printable ledger"),
             Err(err) => self.set_status_err(format!("Could not create printable ledger: {err}")),
         }
     }
 
-    fn open_printable_file(&mut self, path: &PathBuf) {
+    fn export_selected_wallet_csv(&mut self) {
+        if !self.save_enabled {
+            self.set_status_err("Saved data could not be loaded, so export is disabled.");
+            return;
+        }
+
+        match write_csv_ledger(&self.csv_path(false), &[self.selected_wallet().clone()]) {
+            Ok(path) => self.open_export_file(&path, "CSV ledger"),
+            Err(err) => self.set_status_err(format!("Could not create CSV ledger: {err}")),
+        }
+    }
+
+    fn export_all_wallets_csv(&mut self) {
+        if !self.save_enabled {
+            self.set_status_err("Saved data could not be loaded, so export is disabled.");
+            return;
+        }
+
+        match write_csv_ledger(&self.csv_path(true), &self.data.wallets) {
+            Ok(path) => self.open_export_file(&path, "CSV ledger"),
+            Err(err) => self.set_status_err(format!("Could not create CSV ledger: {err}")),
+        }
+    }
+
+    fn open_export_file(&mut self, path: &PathBuf, kind: &str) {
         match opener::open(path) {
-            Ok(()) => self.set_status_ok(format!("Opened printable ledger: {}", path.display())),
+            Ok(()) => self.set_status_ok(format!("Opened {kind}: {}", path.display())),
             Err(err) => {
                 self.set_status_err(format!(
-                    "Printable ledger saved to {}, but could not open it: {err}",
+                    "{kind} saved to {}, but could not open it: {err}",
                     path.display()
                 ));
             }
@@ -1109,11 +1135,19 @@ impl CofferlyApp {
     }
 
     fn print_path(&self, all_wallets: bool) -> PathBuf {
+        self.export_temp_path(all_wallets, "html")
+    }
+
+    fn csv_path(&self, all_wallets: bool) -> PathBuf {
+        self.export_temp_path(all_wallets, "csv")
+    }
+
+    fn export_temp_path(&self, all_wallets: bool, ext: &str) -> PathBuf {
         let file_name = if all_wallets {
-            "cofferly-ledgers.html".to_owned()
+            format!("cofferly-ledgers.{ext}")
         } else {
             format!(
-                "cofferly-{}-ledger.html",
+                "cofferly-{}-ledger.{ext}",
                 ledger_file_stem(&self.selected_wallet().child_name)
             )
         };
@@ -1378,6 +1412,18 @@ impl eframe::App for CofferlyApp {
                             .clicked()
                         {
                             self.print_all_wallets();
+                        }
+                        if ui
+                            .add_sized([220.0, 34.0], egui::Button::new("Export this wallet CSV"))
+                            .clicked()
+                        {
+                            self.export_selected_wallet_csv();
+                        }
+                        if ui
+                            .add_sized([220.0, 34.0], egui::Button::new("Export all wallets CSV"))
+                            .clicked()
+                        {
+                            self.export_all_wallets_csv();
                         }
 
                         ui.add_space(12.0);
@@ -2027,6 +2073,11 @@ mod app_tests {
             .unwrap()
             .to_string_lossy()
             .starts_with("cofferly-"));
+        assert!(path.extension().is_some_and(|ext| ext == "html"));
+
+        let csv = app.csv_path(false);
+        assert!(csv.starts_with(std::env::temp_dir()));
+        assert!(csv.extension().is_some_and(|ext| ext == "csv"));
     }
 
     #[test]
