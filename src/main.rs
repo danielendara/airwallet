@@ -571,6 +571,11 @@ impl CofferlyApp {
     fn register_unlock_failure(&mut self, message: &str) {
         self.failed_unlock_attempts = self.failed_unlock_attempts.saturating_add(1);
         let cooldown = unlock_cooldown_duration(self.failed_unlock_attempts);
+        if cooldown.is_zero() {
+            self.unlock_cooldown_until = None;
+            self.set_status_err(message.to_owned());
+            return;
+        }
         self.unlock_cooldown_until = Some(Instant::now() + cooldown);
         self.set_status_err(format!(
             "{message} Try again in {}.",
@@ -614,6 +619,43 @@ impl CofferlyApp {
             }
             Err(err) => self.set_status_err(err),
         }
+    }
+
+    /// Cancels a Coffer Story change and restores the already-unlocked parent
+    /// mode. No crypto work is needed: the session was never rewrapped and
+    /// the vault file was never touched until a successful confirm.
+    pub(crate) fn cancel_story_change(&mut self) {
+        self.pending_story = None;
+        self.reset_story_entry();
+        self.lock_mode = LockMode::Story;
+        self.parent_unlocked = true;
+        self.set_status_info("Coffer Story unchanged.");
+    }
+
+    /// Cancels a legacy-PIN-to-Coffer-Story migration entirely, dropping the
+    /// in-memory session and returning to the PIN screen. Mirrors what the
+    /// failed-save path in `confirm_story_setup` already does.
+    pub(crate) fn cancel_story_migration(&mut self) {
+        self.session = None;
+        self.pending_story = None;
+        self.clear_pin_digits();
+        self.reset_story_entry();
+        self.lock_mode = LockMode::LegacyPin;
+        self.set_status_info("Migration canceled. Enter the legacy PIN to unlock.");
+    }
+
+    /// Returns from a confirm step to the matching reveal step so the parent
+    /// can look at the story again. The pending story stays in memory by
+    /// design until a successful (or canceled) confirm.
+    pub(crate) fn back_to_story_reveal(&mut self) {
+        self.lock_mode = match self.lock_mode {
+            LockMode::SetupConfirm => LockMode::SetupReveal,
+            LockMode::MigrateConfirm => LockMode::MigrateReveal,
+            LockMode::ChangeConfirm => LockMode::ChangeReveal,
+            other => other,
+        };
+        self.reset_story_entry();
+        self.set_status_info("Here is your Coffer Story again.");
     }
 
     pub(crate) fn print_recovery_card(&mut self) {
@@ -737,8 +779,11 @@ impl CofferlyApp {
                 {
                     self.confirm_story_setup();
                 } else {
+                    // A mismatch here can't be an attacker guessing — the
+                    // expected story was just shown one screen back — so this
+                    // never touches the wrong-credential cooldown.
                     self.reset_story_entry();
-                    self.register_unlock_failure("That was not the Coffer Story.");
+                    self.set_status_err("That didn't match. Try selecting it again.");
                 }
             }
             LockMode::Story => {
@@ -786,6 +831,15 @@ impl CofferlyApp {
         if self.story_selections.len() == story::STORY_LENGTH {
             self.submit_story();
         }
+    }
+
+    /// Undoes the most recent pick. Submission fires automatically at the
+    /// sixth pick, so this is only ever reachable with up to five selected.
+    pub(crate) fn remove_last_story_selection(&mut self) {
+        if self.unlocking || self.unlock_cooldown_remaining().is_some() {
+            return;
+        }
+        self.story_selections.pop();
     }
 
     fn note_input_activity(&mut self, ctx: &egui::Context) {
@@ -1519,9 +1573,15 @@ pub(crate) fn pin_digit_id(index: usize) -> egui::Id {
     egui::Id::new(("parent_pin_digit", index))
 }
 
+/// Free wrong attempts before the cooldown starts. Absorbs an honest misclick
+/// without materially changing brute-force math against the ~4×10⁸-story keyspace.
+const UNLOCK_GRACE_ATTEMPTS: u32 = 2;
+
 fn unlock_cooldown_duration(failed_attempts: u32) -> Duration {
-    let index = failed_attempts
-        .saturating_sub(1)
+    if failed_attempts <= UNLOCK_GRACE_ATTEMPTS {
+        return Duration::ZERO;
+    }
+    let index = (failed_attempts - UNLOCK_GRACE_ATTEMPTS - 1)
         .min(UNLOCK_COOLDOWN_MINUTES.len() as u32 - 1) as usize;
     Duration::from_secs(UNLOCK_COOLDOWN_MINUTES[index] * 60)
 }
@@ -1896,21 +1956,25 @@ mod app_tests {
         assert!(app.session.is_none());
         assert_ne!(app.selected_wallet().child_name, "Secret wallet");
         assert!(app.pin_digits.iter().all(String::is_empty));
+        // The first two wrong attempts are a free grace period (#80): no cooldown yet.
         assert_eq!(
             app.status.text,
-            "Wrong credential or data has been tampered with. Try again in 1 minute."
+            "Wrong credential or data has been tampered with."
         );
         assert_eq!(app.status.severity, StatusSeverity::Error);
+        assert!(app.unlock_cooldown_remaining().is_none());
     }
 
     #[test]
-    fn wrong_pin_attempts_receive_an_escalating_bounded_cooldown() {
-        assert_eq!(unlock_cooldown_duration(1), Duration::from_secs(60));
-        assert_eq!(unlock_cooldown_duration(2), Duration::from_secs(2 * 60));
-        assert_eq!(unlock_cooldown_duration(3), Duration::from_secs(5 * 60));
-        assert_eq!(unlock_cooldown_duration(4), Duration::from_secs(15 * 60));
-        assert_eq!(unlock_cooldown_duration(5), Duration::from_secs(30 * 60));
-        assert_eq!(unlock_cooldown_duration(6), Duration::from_secs(60 * 60));
+    fn first_two_wrong_pin_attempts_are_free_then_cooldown_escalates_and_bounds() {
+        assert_eq!(unlock_cooldown_duration(1), Duration::ZERO);
+        assert_eq!(unlock_cooldown_duration(2), Duration::ZERO);
+        assert_eq!(unlock_cooldown_duration(3), Duration::from_secs(60));
+        assert_eq!(unlock_cooldown_duration(4), Duration::from_secs(2 * 60));
+        assert_eq!(unlock_cooldown_duration(5), Duration::from_secs(5 * 60));
+        assert_eq!(unlock_cooldown_duration(6), Duration::from_secs(15 * 60));
+        assert_eq!(unlock_cooldown_duration(7), Duration::from_secs(30 * 60));
+        assert_eq!(unlock_cooldown_duration(8), Duration::from_secs(60 * 60));
         assert_eq!(unlock_cooldown_duration(100), Duration::from_secs(60 * 60));
     }
 
@@ -1927,6 +1991,93 @@ mod app_tests {
         assert!(!app.parent_unlocked);
         assert!(app.pin_digits.iter().all(String::is_empty));
         assert!(app.status.text.starts_with("Too many wrong PIN attempts."));
+    }
+
+    #[test]
+    fn story_confirm_mismatch_never_starts_a_cooldown() {
+        let (mut app, _dir) = test_app();
+        app.lock_mode = LockMode::SetupConfirm;
+        app.pending_story = Some(test_story());
+        app.story_selections = ["book", "bridge", "acorn", "anchor", "apple", "balloon"].into();
+
+        app.submit_story();
+
+        assert_eq!(app.lock_mode, LockMode::SetupConfirm);
+        assert_eq!(app.failed_unlock_attempts, 0);
+        assert!(app.unlock_cooldown_remaining().is_none());
+        assert_eq!(
+            app.status.text,
+            "That didn't match. Try selecting it again."
+        );
+        assert!(app.story_selections.is_empty());
+    }
+
+    #[test]
+    fn remove_last_story_selection_undoes_the_most_recent_pick() {
+        let (mut app, _dir) = test_app();
+        app.select_story_object("acorn");
+        app.select_story_object("anchor");
+
+        app.remove_last_story_selection();
+
+        assert_eq!(app.story_selections.as_slice(), ["acorn"]);
+    }
+
+    #[test]
+    fn cancel_story_change_restores_unlocked_parent_mode_without_touching_the_vault() {
+        let (mut app, _dir) = test_app();
+        app.lock_mode = LockMode::ChangeConfirm;
+        app.parent_unlocked = false;
+        app.pending_story = Some(test_story());
+        app.story_selections = vec!["acorn"];
+
+        app.cancel_story_change();
+
+        assert_eq!(app.lock_mode, LockMode::Story);
+        assert!(app.parent_unlocked);
+        assert!(app.pending_story.is_none());
+        assert!(app.story_selections.is_empty());
+    }
+
+    #[test]
+    fn cancel_story_migration_drops_the_session_and_returns_to_legacy_pin() {
+        let (mut app, _dir) = test_app();
+        let old_story = test_story();
+        let secret = story::encode(&old_story).unwrap();
+        let mut session = None;
+        crypto::encrypt(
+            &serde_json::to_vec(&default_app_data()).unwrap(),
+            &secret,
+            &mut session,
+        )
+        .unwrap();
+        app.lock_mode = LockMode::MigrateConfirm;
+        app.session = session;
+        app.pending_story = Some(test_story());
+
+        app.cancel_story_migration();
+
+        assert_eq!(app.lock_mode, LockMode::LegacyPin);
+        assert!(app.session.is_none());
+        assert!(app.pending_story.is_none());
+    }
+
+    #[test]
+    fn back_to_story_reveal_returns_to_the_matching_reveal_mode() {
+        let (mut app, _dir) = test_app();
+        for (confirm, reveal) in [
+            (LockMode::SetupConfirm, LockMode::SetupReveal),
+            (LockMode::MigrateConfirm, LockMode::MigrateReveal),
+            (LockMode::ChangeConfirm, LockMode::ChangeReveal),
+        ] {
+            app.lock_mode = confirm;
+            app.story_selections = vec!["acorn"];
+
+            app.back_to_story_reveal();
+
+            assert_eq!(app.lock_mode, reveal);
+            assert!(app.story_selections.is_empty());
+        }
     }
 
     #[test]
