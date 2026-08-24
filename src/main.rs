@@ -3,6 +3,7 @@ use eframe::egui;
 use eframe::egui::Color32;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 mod capture;
@@ -160,7 +161,9 @@ pub(crate) struct CofferlyApp {
     selected_wallet: usize,
     ledger_sort: LedgerSort,
     /// Cached sorted ledger for the selected wallet; invalidated on mutation / selection / sort.
-    ledger_cache: Option<(usize, LedgerSort, Vec<OwnedLedgerRow>)>,
+    /// `Arc` so handing a copy to the table each frame is a pointer bump, not a
+    /// re-allocation of every row's description.
+    ledger_cache: Option<(usize, LedgerSort, Arc<[OwnedLedgerRow]>)>,
     draft: EntryDraft,
     starting_balance_input: String,
     child_name_input: String,
@@ -193,6 +196,9 @@ pub(crate) struct CofferlyApp {
     unlock_cooldown_until: Option<Instant>,
     /// Maintainer-only README capture sequence (`COFFERLY_CAPTURE`).
     capture: Option<capture::CaptureSession>,
+    /// Whether `COFFERLY_CAPTURE` was set at launch. Read once here instead of
+    /// re-reading the environment every frame — it cannot change mid-run.
+    capturing: bool,
 }
 
 struct UnlockResult {
@@ -305,6 +311,7 @@ impl CofferlyApp {
             failed_unlock_attempts: 0,
             unlock_cooldown_until: None,
             capture: capture::CaptureSession::from_env(),
+            capturing: std::env::var_os("COFFERLY_CAPTURE").is_some(),
         }
     }
 
@@ -324,7 +331,7 @@ impl CofferlyApp {
         self.ledger_cache = None;
     }
 
-    fn cached_ledger_rows(&mut self) -> &[OwnedLedgerRow] {
+    fn cached_ledger_rows(&mut self) -> Arc<[OwnedLedgerRow]> {
         let wallet_index = self.selected_wallet;
         let sort = self.ledger_sort;
         let needs_rebuild = match &self.ledger_cache {
@@ -333,11 +340,13 @@ impl CofferlyApp {
         };
 
         if needs_rebuild {
-            let rows = self.data.wallets[wallet_index].ledger_rows_sorted_owned(sort);
+            let rows: Arc<[OwnedLedgerRow]> = self.data.wallets[wallet_index]
+                .ledger_rows_sorted_owned(sort)
+                .into();
             self.ledger_cache = Some((wallet_index, sort, rows));
         }
 
-        &self.ledger_cache.as_ref().unwrap().2
+        self.ledger_cache.as_ref().unwrap().2.clone()
     }
 
     fn selected_wallet(&self) -> &Wallet {
@@ -512,7 +521,9 @@ impl CofferlyApp {
                 ctx.request_repaint();
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {
-                ctx.request_repaint();
+                // Argon2id is running on another thread; polling at max FPS just
+                // burns CPU alongside it. The spinner stays responsive at ~20Hz.
+                ctx.request_repaint_after(Duration::from_millis(50));
             }
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.unlocking = false;
@@ -1659,6 +1670,7 @@ mod app_tests {
             failed_unlock_attempts: 0,
             unlock_cooldown_until: None,
             capture: None,
+            capturing: false,
         };
         (app, dir)
     }
@@ -2061,6 +2073,19 @@ mod app_tests {
         assert_eq!(app.data.wallets.len(), 1);
         assert_eq!(app.status.text, "Keep at least one wallet.");
         assert_eq!(saved_data(&app, "1234").wallets.len(), 1);
+    }
+
+    #[test]
+    fn cached_ledger_rows_reuses_the_same_allocation_until_invalidated() {
+        let (mut app, _dir) = test_app();
+
+        let first = app.cached_ledger_rows();
+        let second = app.cached_ledger_rows();
+        assert!(Arc::ptr_eq(&first, &second));
+
+        app.invalidate_ledger_cache();
+        let rebuilt = app.cached_ledger_rows();
+        assert!(!Arc::ptr_eq(&first, &rebuilt));
     }
 
     #[test]
