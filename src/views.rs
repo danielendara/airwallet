@@ -396,8 +396,10 @@ impl CofferlyApp {
                         }
                         ui.add_space(8.0);
                         egui::Grid::new("story_objects").num_columns(6).spacing([8.0, 8.0]).show(ui, |ui| {
-                            let order = self.display_order.clone();
-                            for (index, id) in order.iter().enumerate() {
+                            // `&'static str` is Copy, so indexing here is a cheap
+                            // copy per tile rather than cloning the whole Vec.
+                            for index in 0..self.display_order.len() {
+                                let id = self.display_order[index];
                                 let enabled = cooldown.is_none() && !self.unlocking;
                                 let (rect, response) = ui.allocate_exact_size(
                                     egui::vec2(82.0, 64.0),
@@ -517,7 +519,7 @@ impl CofferlyApp {
         let has_entries = !self.selected_wallet().entries.is_empty();
         let can_delete_wallet = self.data.wallets.len() > 1;
         let modal_width = settings_modal_width(ctx.content_rect().width());
-        let scroll_height = settings_scroll_height(ctx.content_rect().height());
+        let scroll_height = settings_scroll_height(ctx.content_rect().height(), self.capturing);
         let mut close_requested = false;
 
         let response = egui::Modal::new(egui::Id::new("settings_modal"))
@@ -561,7 +563,7 @@ impl CofferlyApp {
                 ui.separator();
                 ui.add_space(10.0);
 
-                let capturing = std::env::var_os("COFFERLY_CAPTURE").is_some();
+                let capturing = self.capturing;
                 egui::ScrollArea::vertical()
                     .id_salt("settings_content")
                     .auto_shrink([false, false])
@@ -1034,9 +1036,10 @@ impl CofferlyApp {
 
     pub fn ledger_table(&mut self, ui: &mut egui::Ui) {
         let ledger_sort = self.ledger_sort;
-        // Rebuild cache if needed, then clone the slice for the table body so we
-        // do not hold a borrow across the TableBuilder (which may need &mut self).
-        let rows = self.cached_ledger_rows().to_vec();
+        // Rebuild cache if needed, then take an Arc clone (a pointer bump, not a
+        // deep copy) so we do not hold a borrow across the TableBuilder, which
+        // may need &mut self.
+        let rows = self.cached_ledger_rows();
         let mut toggle_sort = false;
         const ROW_HEIGHT: f32 = 42.0;
 
@@ -1186,13 +1189,9 @@ fn settings_modal_width(viewport_width: f32) -> f32 {
     (viewport_width - 48.0).clamp(360.0, 640.0)
 }
 
-fn settings_scroll_height(viewport_height: f32) -> f32 {
+fn settings_scroll_height(viewport_height: f32, capturing: bool) -> f32 {
     // Documentation captures need the full Settings content (Coffer Story + danger zone).
-    let max_height = if std::env::var_os("COFFERLY_CAPTURE").is_some() {
-        1000.0
-    } else {
-        520.0
-    };
+    let max_height = if capturing { 1000.0 } else { 520.0 };
     (viewport_height - 210.0).clamp(260.0, max_height)
 }
 
@@ -1306,10 +1305,13 @@ mod settings_layout_tests {
 
     #[test]
     fn settings_content_scroll_height_is_bounded() {
-        // Capture-mode env must not leak into unit tests.
-        assert!(std::env::var_os("COFFERLY_CAPTURE").is_none());
-        assert_eq!(settings_scroll_height(420.0), 260.0);
-        assert_eq!(settings_scroll_height(720.0), 510.0);
-        assert_eq!(settings_scroll_height(1200.0), 520.0);
+        assert_eq!(settings_scroll_height(420.0, false), 260.0);
+        assert_eq!(settings_scroll_height(720.0, false), 510.0);
+        assert_eq!(settings_scroll_height(1200.0, false), 520.0);
+    }
+
+    #[test]
+    fn settings_content_scroll_height_expands_for_documentation_captures() {
+        assert_eq!(settings_scroll_height(1200.0, true), 990.0);
     }
 }
