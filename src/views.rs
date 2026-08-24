@@ -317,13 +317,31 @@ impl CofferlyApp {
                         let progress_inset = ((ui.available_width() - progress_width) / 2.0).max(0.0);
                         ui.horizontal(|ui| {
                             ui.add_space(progress_inset);
+                            // Painted directly (not `ui.label`) so these decorative
+                            // dots don't reach the accessibility tree as separate
+                            // widgets — "N of 6 selected" below is the readable count.
+                            let (dots_rect, _) = ui.allocate_exact_size(
+                                egui::vec2(progress_width, 30.0),
+                                egui::Sense::hover(),
+                            );
+                            let dot_width = progress_width / crate::story::STORY_LENGTH as f32;
                             for index in 0..crate::story::STORY_LENGTH {
                                 let (mark, color) = if index < self.story_selections.len() {
                                     ("●", theme::GOLD_DARK)
                                 } else {
                                     ("○", theme::TEXT_SECONDARY)
                                 };
-                                ui.label(egui::RichText::new(mark).size(25.0).color(color));
+                                let center = egui::pos2(
+                                    dots_rect.left() + dot_width * (index as f32 + 0.5),
+                                    dots_rect.center().y,
+                                );
+                                ui.painter().text(
+                                    center,
+                                    egui::Align2::CENTER_CENTER,
+                                    mark,
+                                    egui::FontId::proportional(25.0),
+                                    color,
+                                );
                             }
                         });
                         ui.label(
@@ -410,7 +428,15 @@ impl CofferlyApp {
                                     egui::FontId::proportional(11.0),
                                     text_color,
                                 );
-                                response.clone().on_hover_text(format!("Coffer Story object: {label}"));
+                                let accessible_label = format!("Coffer Story object: {label}");
+                                response.widget_info(|| {
+                                    egui::WidgetInfo::labeled(
+                                        egui::WidgetType::Button,
+                                        enabled,
+                                        accessible_label.clone(),
+                                    )
+                                });
+                                response.clone().on_hover_text(accessible_label);
                                 if enabled && response.clicked() {
                                     self.select_story_object(id);
                                 }
