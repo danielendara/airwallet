@@ -39,7 +39,10 @@ use data::{
     valid_description, AppData, Entry, EntryKind, LedgerSort, OwnedLedgerRow, Wallet,
 };
 use export_csv::write_csv_ledger;
-use io::{cleanup_temp_print_artifacts, data_path, prepare_data_vault, save_encrypted};
+use io::{
+    cleanup_temp_print_artifacts, data_path, prepare_data_vault, reserve_private_temp_path,
+    save_encrypted,
+};
 use money::{format_money, format_money_input, parse_dollars_to_cents};
 use print_html::{ledger_file_stem, write_printable_ledger};
 use theme::{app_icon, balance_color, configure_style};
@@ -193,6 +196,9 @@ pub(crate) struct CofferlyApp {
     unlock_cooldown_until: Option<Instant>,
     /// Maintainer-only README capture sequence (`COFFERLY_CAPTURE`).
     capture: Option<capture::CaptureSession>,
+    /// Paths of temp exports/recovery cards written this session, so they can
+    /// be deleted on lock/exit instead of lingering until the next launch.
+    temp_artifact_paths: Vec<PathBuf>,
 }
 
 struct UnlockResult {
@@ -305,6 +311,7 @@ impl CofferlyApp {
             failed_unlock_attempts: 0,
             unlock_cooldown_until: None,
             capture: capture::CaptureSession::from_env(),
+            temp_artifact_paths: Vec::new(),
         }
     }
 
@@ -528,7 +535,22 @@ impl CofferlyApp {
         self.show_settings = false;
         self.confirm_delete_wallet = false;
         self.clear_pin_digits();
+        self.cleanup_temp_artifacts();
         self.set_status_info("Locked. Enter the parent PIN to make changes.");
+    }
+
+    /// Tracks a temp export/recovery-card path so it can be deleted on lock/exit.
+    fn track_temp_artifact(&mut self, path: PathBuf) {
+        self.temp_artifact_paths.push(path);
+    }
+
+    /// Deletes every tracked temp artifact. Best-effort: a file already opened
+    /// by another app may still be in use, and that's fine to leave for the
+    /// next launch's `cleanup_temp_print_artifacts` sweep.
+    fn cleanup_temp_artifacts(&mut self) {
+        for path in self.temp_artifact_paths.drain(..) {
+            let _ = std::fs::remove_file(path);
+        }
     }
 
     fn auto_lock_if_idle(&mut self, ctx: &egui::Context) {
@@ -636,12 +658,24 @@ impl CofferlyApp {
         let html = format!(
             "<!doctype html><meta charset=\"utf-8\"><title>Cofferly recovery card</title><h1>Cofferly recovery card</h1><p>This six-object Coffer Story unlocks your encrypted ledger. Store this card away from the computer and children. Without it, recovery is impossible.</p><ol>{items}</ol>"
         );
-        let path = std::env::temp_dir().join("cofferly-recovery-card.html");
+        let path = match reserve_private_temp_path("recovery-card", "html") {
+            Ok(path) => path,
+            Err(err) => {
+                self.set_status_err(format!("Could not create recovery card: {err}"));
+                return;
+            }
+        };
         match std::fs::write(&path, html)
             .and_then(|_| opener::open(&path).map_err(std::io::Error::other))
         {
-            Ok(()) => self.set_status_ok("Opened recovery card. Store the printed copy safely."),
-            Err(err) => self.set_status_err(format!("Could not create recovery card: {err}")),
+            Ok(()) => {
+                self.track_temp_artifact(path);
+                self.set_status_ok("Opened recovery card. Store the printed copy safely.");
+            }
+            Err(err) => {
+                let _ = std::fs::remove_file(&path);
+                self.set_status_err(format!("Could not create recovery card: {err}"));
+            }
         }
     }
 
@@ -668,6 +702,7 @@ impl CofferlyApp {
                 }
                 self.parent_unlocked = true;
                 self.lock_mode = LockMode::Story;
+                self.pending_story = None;
                 self.reset_story_entry();
                 self.reset_pin_failures();
                 self.set_status_ok("Coffer Story saved. Parent mode unlocked.");
@@ -704,6 +739,7 @@ impl CofferlyApp {
                 self.data.parent_pin.clear();
                 self.parent_unlocked = true;
                 self.lock_mode = LockMode::Story;
+                self.pending_story = None;
                 self.reset_story_entry();
                 self.reset_pin_failures();
                 self.set_status_ok(if was_migration {
@@ -1080,8 +1116,12 @@ impl CofferlyApp {
             return;
         }
 
-        match write_printable_ledger(&self.print_path(false), &[self.selected_wallet().clone()]) {
-            Ok(path) => self.open_export_file(&path, "printable ledger"),
+        let Ok(path) = self.print_path(false) else {
+            self.set_status_err("Could not create printable ledger: temp file unavailable.");
+            return;
+        };
+        match write_printable_ledger(&path, &[self.selected_wallet().clone()]) {
+            Ok(path) => self.open_export_file(path, "printable ledger"),
             Err(err) => self.set_status_err(format!("Could not create printable ledger: {err}")),
         }
     }
@@ -1092,8 +1132,12 @@ impl CofferlyApp {
             return;
         }
 
-        match write_printable_ledger(&self.print_path(true), &self.data.wallets) {
-            Ok(path) => self.open_export_file(&path, "printable ledger"),
+        let Ok(path) = self.print_path(true) else {
+            self.set_status_err("Could not create printable ledger: temp file unavailable.");
+            return;
+        };
+        match write_printable_ledger(&path, &self.data.wallets) {
+            Ok(path) => self.open_export_file(path, "printable ledger"),
             Err(err) => self.set_status_err(format!("Could not create printable ledger: {err}")),
         }
     }
@@ -1104,8 +1148,12 @@ impl CofferlyApp {
             return;
         }
 
-        match write_csv_ledger(&self.csv_path(false), &[self.selected_wallet().clone()]) {
-            Ok(path) => self.open_export_file(&path, "CSV ledger"),
+        let Ok(path) = self.csv_path(false) else {
+            self.set_status_err("Could not create CSV ledger: temp file unavailable.");
+            return;
+        };
+        match write_csv_ledger(&path, &[self.selected_wallet().clone()]) {
+            Ok(path) => self.open_export_file(path, "CSV ledger"),
             Err(err) => self.set_status_err(format!("Could not create CSV ledger: {err}")),
         }
     }
@@ -1116,14 +1164,19 @@ impl CofferlyApp {
             return;
         }
 
-        match write_csv_ledger(&self.csv_path(true), &self.data.wallets) {
-            Ok(path) => self.open_export_file(&path, "CSV ledger"),
+        let Ok(path) = self.csv_path(true) else {
+            self.set_status_err("Could not create CSV ledger: temp file unavailable.");
+            return;
+        };
+        match write_csv_ledger(&path, &self.data.wallets) {
+            Ok(path) => self.open_export_file(path, "CSV ledger"),
             Err(err) => self.set_status_err(format!("Could not create CSV ledger: {err}")),
         }
     }
 
-    fn open_export_file(&mut self, path: &PathBuf, kind: &str) {
-        match opener::open(path) {
+    fn open_export_file(&mut self, path: PathBuf, kind: &str) {
+        self.track_temp_artifact(path.clone());
+        match opener::open(&path) {
             Ok(()) => self.set_status_ok(format!("Opened {kind}: {}", path.display())),
             Err(err) => {
                 self.set_status_err(format!(
@@ -1134,26 +1187,27 @@ impl CofferlyApp {
         }
     }
 
-    fn print_path(&self, all_wallets: bool) -> PathBuf {
+    fn print_path(&self, all_wallets: bool) -> Result<PathBuf, String> {
         self.export_temp_path(all_wallets, "html")
     }
 
-    fn csv_path(&self, all_wallets: bool) -> PathBuf {
+    fn csv_path(&self, all_wallets: bool) -> Result<PathBuf, String> {
         self.export_temp_path(all_wallets, "csv")
     }
 
-    fn export_temp_path(&self, all_wallets: bool, ext: &str) -> PathBuf {
-        let file_name = if all_wallets {
-            format!("cofferly-ledgers.{ext}")
+    fn export_temp_path(&self, all_wallets: bool, ext: &str) -> Result<PathBuf, String> {
+        let stem = if all_wallets {
+            "ledgers".to_owned()
         } else {
             format!(
-                "cofferly-{}-ledger.{ext}",
+                "{}-ledger",
                 ledger_file_stem(&self.selected_wallet().child_name)
             )
         };
 
-        // Ephemeral location — never store plaintext ledgers next to encrypted data.
-        std::env::temp_dir().join(file_name)
+        // Ephemeral, unpredictably-named location — never store plaintext
+        // ledgers next to encrypted data.
+        reserve_private_temp_path(&stem, ext)
     }
 
     fn save_with_success(&mut self, success_status: impl Into<String>) {
@@ -1205,6 +1259,10 @@ impl eframe::App for CofferlyApp {
             ledger_sort_newest_first: matches!(self.ledger_sort, LedgerSort::NewestFirst),
         };
         eframe::set_value(storage, UI_STATE_KEY, &state);
+    }
+
+    fn on_exit(&mut self) {
+        self.cleanup_temp_artifacts();
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -1620,6 +1678,7 @@ fn load_story_icon_textures(ctx: &egui::Context) -> HashMap<&'static str, egui::
 mod app_tests {
     use super::*;
     use chrono::NaiveDate;
+    use eframe::App as _;
     use tempfile::{tempdir, TempDir};
 
     fn test_app() -> (CofferlyApp, TempDir) {
@@ -1659,6 +1718,7 @@ mod app_tests {
             failed_unlock_attempts: 0,
             unlock_cooldown_until: None,
             capture: None,
+            temp_artifact_paths: Vec::new(),
         };
         (app, dir)
     }
@@ -2066,7 +2126,7 @@ mod app_tests {
     #[test]
     fn print_path_uses_temp_directory() {
         let (app, _dir) = test_app();
-        let path = app.print_path(true);
+        let path = app.print_path(true).unwrap();
         assert!(path.starts_with(std::env::temp_dir()));
         assert!(path
             .file_name()
@@ -2074,10 +2134,28 @@ mod app_tests {
             .to_string_lossy()
             .starts_with("cofferly-"));
         assert!(path.extension().is_some_and(|ext| ext == "html"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        let _ = std::fs::remove_file(&path);
 
-        let csv = app.csv_path(false);
+        let csv = app.csv_path(false).unwrap();
         assert!(csv.starts_with(std::env::temp_dir()));
         assert!(csv.extension().is_some_and(|ext| ext == "csv"));
+        let _ = std::fs::remove_file(&csv);
+    }
+
+    #[test]
+    fn print_path_uses_unpredictable_names() {
+        let (app, _dir) = test_app();
+        let first = app.print_path(true).unwrap();
+        let second = app.print_path(true).unwrap();
+        assert_ne!(first, second);
+        let _ = std::fs::remove_file(&first);
+        let _ = std::fs::remove_file(&second);
     }
 
     #[test]
@@ -2092,6 +2170,44 @@ mod app_tests {
         app.lock_parent();
         assert!(!app.parent_unlocked);
         assert!(app.session.is_none());
+    }
+
+    #[test]
+    fn lock_deletes_tracked_temp_artifacts() {
+        let (mut app, dir) = test_app();
+        let artifact = dir.path().join("cofferly-recovery-card-test.html");
+        std::fs::write(&artifact, "secret story").unwrap();
+        app.track_temp_artifact(artifact.clone());
+
+        app.lock_parent();
+
+        assert!(!artifact.exists());
+        assert!(app.temp_artifact_paths.is_empty());
+    }
+
+    #[test]
+    fn on_exit_deletes_tracked_temp_artifacts() {
+        let (mut app, dir) = test_app();
+        let artifact = dir.path().join("cofferly-ledger-test.csv");
+        std::fs::write(&artifact, "secret ledger").unwrap();
+        app.track_temp_artifact(artifact.clone());
+
+        app.on_exit();
+
+        assert!(!artifact.exists());
+    }
+
+    #[test]
+    fn confirm_story_setup_clears_pending_story_after_success() {
+        let (mut app, _dir) = test_app();
+        app.lock_mode = LockMode::SetupConfirm;
+        let selected = story::generate().unwrap();
+        app.pending_story = Some(selected);
+        app.story_selections = selected.to_vec();
+
+        app.confirm_story_setup();
+
+        assert!(app.pending_story.is_none());
     }
 
     #[test]

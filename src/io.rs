@@ -164,6 +164,25 @@ fn write_new_atomically(path: &Path, contents: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
+/// Reserves a fresh, unpredictably-named temp file for family data (ledger
+/// exports, the recovery card). Created with owner-only permissions (0600 on
+/// Unix by default via `tempfile`) and a random suffix so a shared `/tmp`
+/// cannot expose the contents to other local users or a pre-planted symlink.
+/// Returns the persisted path; the caller writes its content and is
+/// responsible for deleting it promptly (e.g. on lock/exit) rather than
+/// leaving it for the next launch's best-effort cleanup.
+pub fn reserve_private_temp_path(stem: &str, ext: &str) -> Result<PathBuf, String> {
+    let temp_file = tempfile::Builder::new()
+        .prefix(&format!("cofferly-{stem}-"))
+        .suffix(&format!(".{ext}"))
+        .rand_bytes(12)
+        .tempfile_in(std::env::temp_dir())
+        .map_err(|err| err.to_string())?;
+
+    let (_file, path) = temp_file.keep().map_err(|err| err.error.to_string())?;
+    Ok(path)
+}
+
 /// Best-effort cleanup of previous print artifacts under the OS temp directory.
 pub fn cleanup_temp_print_artifacts() {
     let temp = std::env::temp_dir();
