@@ -302,6 +302,8 @@ impl CofferlyApp {
                             if ui.button("Generate another story").clicked() { self.regenerate_story(); }
                             if ui.button("Print recovery card").clicked() { self.print_recovery_card(); }
                             if ui.add(egui::Button::new(egui::RichText::new("I wrote it down — continue").strong().color(egui::Color32::WHITE)).fill(theme::ACCENT_DARK)).clicked() { self.lock_mode = if is_migration { LockMode::MigrateConfirm } else if is_change { LockMode::ChangeConfirm } else { LockMode::SetupConfirm }; self.reset_story_entry(); }
+                            if is_migration && ui.button("Cancel migration").clicked() { self.cancel_story_migration(); }
+                            if is_change && ui.button("Cancel").clicked() { self.cancel_story_change(); }
                         });
                     } else {
                         let cooldown = self.unlock_cooldown_remaining();
@@ -333,8 +335,46 @@ impl CofferlyApp {
                             .size(12.0)
                             .color(theme::TEXT_SECONDARY),
                         );
-                        if ui.button("Clear").clicked() {
-                            self.reset_story_entry();
+                        ui.horizontal(|ui| {
+                            if ui.button("Clear").clicked() {
+                                self.reset_story_entry();
+                            }
+                            if ui
+                                .add_enabled(
+                                    !self.story_selections.is_empty(),
+                                    egui::Button::new("Remove last"),
+                                )
+                                .clicked()
+                            {
+                                self.remove_last_story_selection();
+                            }
+                            match self.lock_mode {
+                                LockMode::SetupConfirm => {
+                                    if ui.button("Back").clicked() {
+                                        self.back_to_story_reveal();
+                                    }
+                                }
+                                LockMode::MigrateConfirm => {
+                                    if ui.button("Back").clicked() {
+                                        self.back_to_story_reveal();
+                                    }
+                                    if ui.button("Cancel migration").clicked() {
+                                        self.cancel_story_migration();
+                                    }
+                                }
+                                LockMode::ChangeConfirm => {
+                                    if ui.button("Back").clicked() {
+                                        self.back_to_story_reveal();
+                                    }
+                                    if ui.button("Cancel").clicked() {
+                                        self.cancel_story_change();
+                                    }
+                                }
+                                _ => {}
+                            }
+                        });
+                        if ui.input(|input| input.key_pressed(egui::Key::Backspace)) {
+                            self.remove_last_story_selection();
                         }
                         ui.add_space(8.0);
                         egui::Grid::new("story_objects").num_columns(6).spacing([8.0, 8.0]).show(ui, |ui| {
