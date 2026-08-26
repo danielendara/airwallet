@@ -515,7 +515,7 @@ impl CofferlyApp {
         }
 
         let selected_name = self.selected_wallet().child_name.clone();
-        let current_balance = self.selected_wallet().current_balance_cents();
+        let starting_balance = self.selected_wallet().starting_balance_cents;
         let has_entries = !self.selected_wallet().entries.is_empty();
         let can_delete_wallet = self.data.wallets.len() > 1;
         let modal_width = settings_modal_width(ctx.content_rect().width());
@@ -662,14 +662,14 @@ impl CofferlyApp {
                                     .color(theme::TEXT_SECONDARY),
                                 );
                                 ui.add_space(4.0);
-                                let balance_ready = !self.starting_balance_input.trim().is_empty();
+                                let balance_ready = self.starting_balance_save_ready();
                                 settings_input_action_row(ui, 112.0, |ui, input_width| {
                                     ui.add_sized(
                                         [input_width, 38.0],
                                         egui::TextEdit::singleline(
                                             &mut self.starting_balance_input,
                                         )
-                                        .hint_text(format_money_input(current_balance)),
+                                        .hint_text(format_money_input(starting_balance)),
                                     );
                                     if ui
                                         .add_enabled(

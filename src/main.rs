@@ -1019,6 +1019,26 @@ impl CofferlyApp {
         self.save_with_success(status);
     }
 
+    fn open_settings(&mut self) {
+        let wallet = self.selected_wallet();
+        let name = wallet.child_name.clone();
+        let starting = wallet.starting_balance_cents;
+        self.child_name_input = name;
+        self.starting_balance_input = format_money_input(starting);
+        self.new_child_name_input.clear();
+        self.confirm_delete_wallet = false;
+        self.show_settings = true;
+    }
+
+    fn starting_balance_save_ready(&self) -> bool {
+        match parse_dollars_to_cents(&self.starting_balance_input) {
+            Ok(cents) => {
+                valid_cents(cents) && cents != self.selected_wallet().starting_balance_cents
+            }
+            Err(_) => false,
+        }
+    }
+
     fn update_starting_balance(&mut self) {
         if !self.can_change("Unlock parent mode before changing balances.") {
             return;
@@ -1032,6 +1052,9 @@ impl CofferlyApp {
         };
         if !valid_cents(balance) {
             self.set_status_err("Enter a smaller starting balance.");
+            return;
+        }
+        if balance == self.selected_wallet().starting_balance_cents {
             return;
         }
 
@@ -1408,14 +1431,7 @@ impl eframe::App for CofferlyApp {
                             .add_sized([108.0, 36.0], egui::Button::new("Settings"))
                             .clicked()
                         {
-                            let wallet = self.selected_wallet();
-                            let name = wallet.child_name.clone();
-                            let bal = wallet.current_balance_cents();
-                            self.child_name_input = name;
-                            self.starting_balance_input = format_money_input(bal);
-                            self.new_child_name_input.clear();
-                            self.confirm_delete_wallet = false;
-                            self.show_settings = true;
+                            self.open_settings();
                         }
                         ui.label(
                             egui::RichText::new("Saved locally")
@@ -2439,5 +2455,62 @@ mod app_tests {
 
         assert!(app.selected_wallet().entries.is_empty());
         assert_eq!(app.status.text, "Use today or an earlier date.");
+    }
+
+    fn wallet_with_opening_and_entry(app: &mut CofferlyApp, starting_cents: i64, entry_cents: i64) {
+        app.data.wallets[0].starting_balance_cents = starting_cents;
+        app.data.wallets[0].entries.push(Entry {
+            date: NaiveDate::from_ymd_opt(2026, 7, 1).unwrap(),
+            description: "Allowance".to_owned(),
+            amount_cents: entry_cents,
+        });
+    }
+
+    #[test]
+    fn opening_settings_prefills_starting_balance_not_the_running_total() {
+        let (mut app, _dir) = test_app();
+        wallet_with_opening_and_entry(&mut app, 1_000, 500);
+        assert_eq!(app.selected_wallet().current_balance_cents(), 1_500);
+
+        app.open_settings();
+
+        assert!(app.show_settings);
+        assert_eq!(app.starting_balance_input, format_money_input(1_000));
+        assert_ne!(app.starting_balance_input, format_money_input(1_500));
+        assert!(!app.starting_balance_save_ready());
+    }
+
+    #[test]
+    fn saving_the_prefilled_starting_balance_does_not_rebase_opening_to_the_running_total() {
+        let (mut app, _dir) = test_app();
+        wallet_with_opening_and_entry(&mut app, 1_000, 500);
+
+        app.open_settings();
+        app.update_starting_balance();
+
+        assert_eq!(app.selected_wallet().starting_balance_cents, 1_000);
+        assert_eq!(app.selected_wallet().current_balance_cents(), 1_500);
+        assert_eq!(app.selected_wallet().entries.len(), 1);
+        assert!(!app.data_path.exists());
+    }
+
+    #[test]
+    fn updating_starting_balance_shifts_the_running_total_without_touching_entries() {
+        let (mut app, _dir) = test_app();
+        wallet_with_opening_and_entry(&mut app, 1_000, 500);
+        app.starting_balance_input = "20.00".to_owned();
+        assert!(app.starting_balance_save_ready());
+
+        app.update_starting_balance();
+
+        assert_eq!(app.selected_wallet().starting_balance_cents, 2_000);
+        assert_eq!(app.selected_wallet().current_balance_cents(), 2_500);
+        assert_eq!(app.selected_wallet().entries.len(), 1);
+        assert!(app.starting_balance_input.is_empty());
+        assert!(!app.starting_balance_save_ready());
+        assert_eq!(
+            saved_data(&app, "1234").wallets[0].starting_balance_cents,
+            2_000
+        );
     }
 }
