@@ -1019,12 +1019,16 @@ impl CofferlyApp {
         self.save_with_success(status);
     }
 
-    fn open_settings(&mut self) {
+    fn prefill_settings_from_selected(&mut self) {
         let wallet = self.selected_wallet();
         let name = wallet.child_name.clone();
         let starting = wallet.starting_balance_cents;
         self.child_name_input = name;
         self.starting_balance_input = format_money_input(starting);
+    }
+
+    fn open_settings(&mut self) {
+        self.prefill_settings_from_selected();
         self.new_child_name_input.clear();
         self.confirm_delete_wallet = false;
         self.show_settings = true;
@@ -1122,6 +1126,9 @@ impl CofferlyApp {
         });
         self.selected_wallet = self.data.wallets.len() - 1;
         self.new_child_name_input.clear();
+        // New wallets open at $0. Drop the previous kid's starting-balance
+        // prefill so Save stays disabled until this wallet's opening is edited.
+        self.prefill_settings_from_selected();
         self.invalidate_ledger_cache();
         self.save_with_success(format!("Added wallet for {name}."));
     }
@@ -2512,5 +2519,25 @@ mod app_tests {
             saved_data(&app, "1234").wallets[0].starting_balance_cents,
             2_000
         );
+    }
+
+    #[test]
+    fn adding_a_wallet_resets_the_previous_kids_starting_balance_prefill() {
+        let (mut app, _dir) = test_app();
+        wallet_with_opening_and_entry(&mut app, 1_000, 500);
+        app.open_settings();
+        assert_eq!(app.starting_balance_input, format_money_input(1_000));
+        assert!(!app.starting_balance_save_ready());
+
+        app.new_child_name_input = "Sam".to_owned();
+        app.add_child_wallet();
+
+        assert_eq!(app.selected_wallet().child_name, "Sam");
+        assert_eq!(app.selected_wallet().starting_balance_cents, 0);
+        assert_eq!(app.starting_balance_input, format_money_input(0));
+        assert!(!app.starting_balance_save_ready());
+
+        app.starting_balance_input = "5.00".to_owned();
+        assert!(app.starting_balance_save_ready());
     }
 }
