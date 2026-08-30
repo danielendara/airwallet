@@ -1201,6 +1201,9 @@ impl CofferlyApp {
         if self.selected_wallet >= self.data.wallets.len() {
             self.selected_wallet = self.data.wallets.len() - 1;
         }
+        // Settings stays open after delete. Drop the removed wallet's
+        // name/opening prefills so Save cannot overwrite the remaining kid.
+        self.prefill_settings_from_selected();
         self.invalidate_ledger_cache();
         self.save_with_success(format!("Deleted wallet for {wallet_name}."));
     }
@@ -2535,6 +2538,30 @@ mod app_tests {
         assert_eq!(app.selected_wallet().child_name, "Sam");
         assert_eq!(app.selected_wallet().starting_balance_cents, 0);
         assert_eq!(app.starting_balance_input, format_money_input(0));
+        assert!(!app.starting_balance_save_ready());
+
+        app.starting_balance_input = "5.00".to_owned();
+        assert!(app.starting_balance_save_ready());
+    }
+
+    #[test]
+    fn deleting_a_wallet_resets_the_deleted_kids_settings_prefills() {
+        let (mut app, _dir) = test_app();
+        wallet_with_opening_and_entry(&mut app, 1_000, 500);
+        app.data.wallets[1].starting_balance_cents = 2_500;
+        app.open_settings();
+        assert!(app.show_settings);
+        assert_eq!(app.child_name_input, "Child 1");
+        assert_eq!(app.starting_balance_input, format_money_input(1_000));
+        assert!(!app.starting_balance_save_ready());
+
+        app.delete_selected_wallet();
+
+        assert!(app.show_settings);
+        assert_eq!(app.selected_wallet().child_name, "Child 2");
+        assert_eq!(app.selected_wallet().starting_balance_cents, 2_500);
+        assert_eq!(app.child_name_input, "Child 2");
+        assert_eq!(app.starting_balance_input, format_money_input(2_500));
         assert!(!app.starting_balance_save_ready());
 
         app.starting_balance_input = "5.00".to_owned();

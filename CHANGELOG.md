@@ -4,6 +4,7 @@
 
 - Settings starting-balance field prefills and hints the wallet's opening balance, not the running total, and Save stays disabled until the value actually changes.
 - Adding a wallet from Settings resets the starting-balance field to the new wallet's opening amount so Save cannot write the previous kid's prefill.
+- Deleting a wallet from Settings resets the name and starting-balance fields to the remaining wallet so Save cannot overwrite it.
 - CSV export for one wallet or all wallets (temp file, local open, no cloud).
 - Settings shows the Cofferly version next to the save reminder.
 - Money amounts use thousands separators (`$1,234.56`); typed input is unchanged.
