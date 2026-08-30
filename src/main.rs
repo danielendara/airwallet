@@ -871,6 +871,7 @@ impl CofferlyApp {
         if self.unlocking
             || self.unlock_cooldown_remaining().is_some()
             || self.story_selections.len() >= story::STORY_LENGTH
+            || self.story_selections.contains(&id)
         {
             return;
         }
@@ -1098,7 +1099,9 @@ impl CofferlyApp {
 
         let previous_child_name = std::mem::take(&mut self.selected_wallet_mut().child_name);
         self.selected_wallet_mut().child_name = name;
-        self.child_name_input.clear();
+        // Keep name + opening filled (same helper as add/delete) so Save name
+        // stays off: the field matches the selected wallet again.
+        self.prefill_settings_from_selected();
         self.invalidate_ledger_cache();
         self.save_with_success(format!(
             "Renamed {previous_child_name} to {}.",
@@ -2122,6 +2125,27 @@ mod app_tests {
     }
 
     #[test]
+    fn picking_an_already_chosen_story_object_is_ignored() {
+        let (mut app, _dir) = test_app();
+        app.parent_unlocked = false;
+        app.lock_mode = LockMode::Story;
+        for id in ["acorn", "anchor", "apple", "balloon", "book"] {
+            app.select_story_object(id);
+        }
+
+        app.select_story_object("acorn");
+
+        assert_eq!(
+            app.story_selections.as_slice(),
+            ["acorn", "anchor", "apple", "balloon", "book"]
+        );
+        assert!(!app.unlocking);
+        assert_eq!(app.failed_unlock_attempts, 0);
+        assert!(app.unlock_cooldown_remaining().is_none());
+        assert_ne!(app.status.text, "Invalid Coffer Story.");
+    }
+
+    #[test]
     fn cancel_story_change_restores_unlocked_parent_mode_without_touching_the_vault() {
         let (mut app, _dir) = test_app();
         app.lock_mode = LockMode::ChangeConfirm;
@@ -2542,6 +2566,27 @@ mod app_tests {
 
         app.starting_balance_input = "5.00".to_owned();
         assert!(app.starting_balance_save_ready());
+    }
+
+    #[test]
+    fn renaming_a_wallet_keeps_the_settings_name_field_prefilled() {
+        let (mut app, _dir) = test_app();
+        wallet_with_opening_and_entry(&mut app, 1_000, 500);
+        app.open_settings();
+        assert_eq!(app.child_name_input, "Child 1");
+        assert_eq!(app.starting_balance_input, format_money_input(1_000));
+        app.child_name_input = "Sam".to_owned();
+
+        app.rename_selected_child();
+
+        assert_eq!(app.selected_wallet().child_name, "Sam");
+        assert_eq!(app.child_name_input, "Sam");
+        assert_eq!(app.starting_balance_input, format_money_input(1_000));
+        assert_eq!(
+            app.child_name_input.trim(),
+            app.selected_wallet().child_name
+        );
+        assert_eq!(saved_data(&app, "1234").wallets[0].child_name, "Sam");
     }
 
     #[test]

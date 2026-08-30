@@ -400,7 +400,9 @@ impl CofferlyApp {
                             // copy per tile rather than cloning the whole Vec.
                             for index in 0..self.display_order.len() {
                                 let id = self.display_order[index];
-                                let enabled = cooldown.is_none() && !self.unlocking;
+                                let already_picked = self.story_selections.contains(&id);
+                                let enabled =
+                                    cooldown.is_none() && !self.unlocking && !already_picked;
                                 let (rect, response) = ui.allocate_exact_size(
                                     egui::vec2(82.0, 64.0),
                                     egui::Sense::click(),
