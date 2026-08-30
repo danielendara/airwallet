@@ -28,6 +28,13 @@ pub fn parse_dollars_to_cents(input: &str) -> Result<i64, String> {
         return Err("Enter a dollar amount.".to_owned());
     }
 
+    // Ledger/sidebar copy uses grouping (`$1,234.56`, thin spaces). Strip those
+    // from the dollar part so a paste round-trips through `format_money`.
+    let dollars: String = dollars
+        .chars()
+        .filter(|character| *character != ',' && !character.is_whitespace())
+        .collect();
+
     if !dollars.chars().all(|character| character.is_ascii_digit())
         || !cents.chars().all(|character| character.is_ascii_digit())
     {
@@ -116,6 +123,23 @@ mod tests {
         assert_eq!(parse_dollars_to_cents("$ 10").unwrap(), 1000);
         assert_eq!(parse_dollars_to_cents("-10.50").unwrap(), -1050);
         assert_eq!(parse_dollars_to_cents("-.50").unwrap(), -50);
+    }
+
+    #[test]
+    fn parses_grouped_thousands_from_displayed_money() {
+        assert_eq!(parse_dollars_to_cents("$1,234.56").unwrap(), 123_456);
+        assert_eq!(parse_dollars_to_cents("1,000").unwrap(), 100_000);
+        assert_eq!(parse_dollars_to_cents("1,000,000.00").unwrap(), 100_000_000);
+        assert_eq!(parse_dollars_to_cents("1\u{2009}234.56").unwrap(), 123_456);
+        assert_eq!(parse_dollars_to_cents("1\u{202F}234.56").unwrap(), 123_456);
+        assert_eq!(
+            parse_dollars_to_cents(&format_money(123_456)).unwrap(),
+            123_456
+        );
+        assert_eq!(
+            parse_dollars_to_cents(&format_money(100_000_000)).unwrap(),
+            100_000_000
+        );
     }
 
     #[test]

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Amount and starting-balance fields accept pasted grouped money (`$1,234.56`) by ignoring thousands separators.
+- Renaming a wallet keeps the Settings name field filled so it doesn't look like the name was lost.
+- Already-picked Coffer Story objects are ignored and greyed out so a duplicate tap cannot count as a failed unlock.
 - Settings starting-balance field prefills and hints the wallet's opening balance, not the running total, and Save stays disabled until the value actually changes.
 - Adding a wallet from Settings resets the starting-balance field to the new wallet's opening amount so Save cannot write the previous kid's prefill.
 - Deleting a wallet from Settings resets the name and starting-balance fields to the remaining wallet so Save cannot overwrite it.
