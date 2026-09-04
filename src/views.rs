@@ -13,7 +13,7 @@ use crate::money::format_money_input;
 use crate::theme;
 use crate::theme::amount_color;
 use crate::theme::balance_color;
-use crate::{CofferlyApp, LockMode};
+use crate::{CofferlyApp, EntryFormField, LockMode};
 use crate::{StatusSeverity, APP_NAME, APP_VERSION, PIN_LENGTH};
 
 impl CofferlyApp {
@@ -936,6 +936,10 @@ impl CofferlyApp {
             .corner_radius(egui::CornerRadius::same(12))
             .inner_margin(egui::Margin::same(14))
             .show(ui, |ui| {
+                if let Some(field) = self.pending_entry_focus.take() {
+                    ui.memory_mut(|memory| memory.request_focus(crate::entry_field_id(field)));
+                }
+
                 ui.label(
                     egui::RichText::new("Add a transaction")
                         .strong()
@@ -980,6 +984,7 @@ impl CofferlyApp {
                 let desc_response = ui.add_sized(
                     [ui.available_width(), 36.0],
                     egui::TextEdit::singleline(&mut self.draft.description)
+                        .id(crate::entry_field_id(EntryFormField::Description))
                         .char_limit(100)
                         .hint_text("e.g. Weekly allowance"),
                 );
@@ -992,7 +997,9 @@ impl CofferlyApp {
                 );
                 let amount_response = ui.add_sized(
                     [ui.available_width(), 36.0],
-                    egui::TextEdit::singleline(&mut self.draft.amount).hint_text("$0.00"),
+                    egui::TextEdit::singleline(&mut self.draft.amount)
+                        .id(crate::entry_field_id(EntryFormField::Amount))
+                        .hint_text("$0.00"),
                 );
 
                 ui.label(
@@ -1003,7 +1010,9 @@ impl CofferlyApp {
                 );
                 let date_response = ui.add_sized(
                     [ui.available_width(), 36.0],
-                    egui::TextEdit::singleline(&mut self.draft.date_input).hint_text("MM/DD/YYYY"),
+                    egui::TextEdit::singleline(&mut self.draft.date_input)
+                        .id(crate::entry_field_id(EntryFormField::Date))
+                        .hint_text("MM/DD/YYYY"),
                 );
 
                 let enter_submit = ui.input(|i| i.key_pressed(egui::Key::Enter))
