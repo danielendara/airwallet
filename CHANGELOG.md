@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Amount and starting-balance validation copy mentions grouped/$ examples (`$1,234.56`) the parser already accepts.
+- Widens the main status chip so long export/unlock messages stay readable.
+- Entry-form validation failures move keyboard focus to the first invalid field.
 - Amount and starting-balance fields accept pasted grouped money (`$1,234.56`) by ignoring thousands separators.
 - Renaming a wallet keeps the Settings name field filled so it doesn't look like the name was lost.
 - Already-picked Coffer Story objects are ignored and greyed out so a duplicate tap cannot count as a failed unlock.

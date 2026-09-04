@@ -156,6 +156,13 @@ pub(crate) enum LockMode {
     ChangeConfirm,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum EntryFormField {
+    Amount,
+    Description,
+    Date,
+}
+
 pub(crate) struct CofferlyApp {
     data: AppData,
     raw_bytes: Option<Vec<u8>>,
@@ -173,6 +180,7 @@ pub(crate) struct CofferlyApp {
     new_child_name_input: String,
     pin_digits: [String; PIN_LENGTH],
     pending_pin_focus: Option<usize>,
+    pending_entry_focus: Option<EntryFormField>,
     lock_mode: LockMode,
     pending_story: Option<[&'static str; story::STORY_LENGTH]>,
     story_selections: Vec<&'static str>,
@@ -294,6 +302,7 @@ impl CofferlyApp {
             new_child_name_input: String::new(),
             pin_digits: Default::default(),
             pending_pin_focus: Some(0),
+            pending_entry_focus: None,
             lock_mode,
             pending_story: story::generate().ok(),
             story_selections: Vec::new(),
@@ -956,18 +965,21 @@ impl CofferlyApp {
         let amount = match parse_dollars_to_cents(&self.draft.amount) {
             Ok(amount) if amount > 0 => amount,
             _ => {
-                self.set_status_err("Enter a valid amount, like 10 or 10.50.");
+                self.set_status_err("Enter a valid amount, like 10, 10.50, or $1,234.56.");
+                self.pending_entry_focus = Some(EntryFormField::Amount);
                 return;
             }
         };
         if !valid_cents(amount) {
             self.set_status_err("Enter a smaller amount.");
+            self.pending_entry_focus = Some(EntryFormField::Amount);
             return;
         }
 
         let description = self.draft.description.trim().to_owned();
         if !valid_description(&self.draft.description) {
             self.set_status_err("Add a description (1-100 characters).");
+            self.pending_entry_focus = Some(EntryFormField::Description);
             return;
         }
 
@@ -975,11 +987,13 @@ impl CofferlyApp {
             Ok(date) => date,
             Err(err) => {
                 self.set_status_err(err);
+                self.pending_entry_focus = Some(EntryFormField::Date);
                 return;
             }
         };
         if date > Local::now().date_naive() {
             self.set_status_err("Use today or an earlier date.");
+            self.pending_entry_focus = Some(EntryFormField::Date);
             return;
         }
 
@@ -1052,7 +1066,7 @@ impl CofferlyApp {
         self.confirm_delete_wallet = false;
 
         let Ok(balance) = parse_dollars_to_cents(&self.starting_balance_input) else {
-            self.set_status_err("Enter a valid starting balance, like 90 or 90.00.");
+            self.set_status_err("Enter a valid starting balance, like 90, 90.00, or $1,234.56.");
             return;
         };
         if !valid_cents(balance) {
@@ -1457,8 +1471,8 @@ impl eframe::App for CofferlyApp {
 
         egui::Panel::left("wallet_picker")
             .resizable(false)
-            .min_size(252.0)
-            .max_size(252.0)
+            .min_size(332.0)
+            .max_size(332.0)
             .frame(
                 egui::Frame::new()
                     .fill(theme::FAINT_BG)
@@ -1491,7 +1505,7 @@ impl eframe::App for CofferlyApp {
                                 format!("{}, balance {}", child_name, format_money(balance));
 
                             let response = ui.add_sized(
-                                [220.0, 64.0],
+                                [300.0, 64.0],
                                 egui::Button::selectable(selected, "")
                                     .fill(if selected {
                                         theme::ACCENT
@@ -1554,25 +1568,25 @@ impl eframe::App for CofferlyApp {
                         ui.add_space(6.0);
 
                         if ui
-                            .add_sized([220.0, 34.0], egui::Button::new("Print this wallet"))
+                            .add_sized([300.0, 34.0], egui::Button::new("Print this wallet"))
                             .clicked()
                         {
                             self.print_selected_wallet();
                         }
                         if ui
-                            .add_sized([220.0, 34.0], egui::Button::new("Print all wallets"))
+                            .add_sized([300.0, 34.0], egui::Button::new("Print all wallets"))
                             .clicked()
                         {
                             self.print_all_wallets();
                         }
                         if ui
-                            .add_sized([220.0, 34.0], egui::Button::new("Export this wallet CSV"))
+                            .add_sized([300.0, 34.0], egui::Button::new("Export this wallet CSV"))
                             .clicked()
                         {
                             self.export_selected_wallet_csv();
                         }
                         if ui
-                            .add_sized([220.0, 34.0], egui::Button::new("Export all wallets CSV"))
+                            .add_sized([300.0, 34.0], egui::Button::new("Export all wallets CSV"))
                             .clicked()
                         {
                             self.export_all_wallets_csv();
@@ -1639,7 +1653,7 @@ impl CofferlyApp {
             .corner_radius(egui::CornerRadius::same(8))
             .inner_margin(egui::Margin::symmetric(10, 8))
             .show(ui, |ui| {
-                ui.set_max_width(200.0);
+                ui.set_max_width(300.0);
                 ui.label(
                     egui::RichText::new(display)
                         .size(11.0)
@@ -1669,6 +1683,10 @@ fn restore_ui_state(cc: &eframe::CreationContext<'_>, wallet_count: usize) -> (u
 
 pub(crate) fn pin_digit_id(index: usize) -> egui::Id {
     egui::Id::new(("parent_pin_digit", index))
+}
+
+pub(crate) fn entry_field_id(field: EntryFormField) -> egui::Id {
+    egui::Id::new(("entry_form_field", field))
 }
 
 /// Free wrong attempts before the cooldown starts. Absorbs an honest misclick
@@ -1796,6 +1814,7 @@ mod app_tests {
             new_child_name_input: String::new(),
             pin_digits: Default::default(),
             pending_pin_focus: None,
+            pending_entry_focus: None,
             lock_mode: LockMode::Story,
             pending_story: None,
             story_selections: Vec::new(),
@@ -2314,8 +2333,12 @@ mod app_tests {
 
         assert!(app.selected_wallet().entries.is_empty());
         assert!(!app.data_path.exists());
-        assert_eq!(app.status.text, "Enter a valid amount, like 10 or 10.50.");
+        assert_eq!(
+            app.status.text,
+            "Enter a valid amount, like 10, 10.50, or $1,234.56."
+        );
         assert_eq!(app.status.severity, StatusSeverity::Error);
+        assert_eq!(app.pending_entry_focus, Some(EntryFormField::Amount));
     }
 
     #[test]
@@ -2489,6 +2512,56 @@ mod app_tests {
 
         assert!(app.selected_wallet().entries.is_empty());
         assert_eq!(app.status.text, "Use today or an earlier date.");
+        assert_eq!(app.pending_entry_focus, Some(EntryFormField::Date));
+    }
+
+    #[test]
+    fn entry_validation_moves_focus_to_the_first_invalid_field() {
+        let (mut app, _dir) = test_app();
+        app.draft.kind = EntryKind::Deposit;
+        app.draft.description = "Allowance".to_owned();
+        app.draft.amount.clear();
+
+        app.add_entry();
+
+        assert_eq!(app.pending_entry_focus, Some(EntryFormField::Amount));
+        assert_eq!(
+            app.status.text,
+            "Enter a valid amount, like 10, 10.50, or $1,234.56."
+        );
+        assert!(app.selected_wallet().entries.is_empty());
+
+        app.draft.amount = "5".to_owned();
+        app.draft.description.clear();
+        app.add_entry();
+
+        assert_eq!(app.pending_entry_focus, Some(EntryFormField::Description));
+        assert_eq!(app.status.text, "Add a description (1-100 characters).");
+
+        app.draft.description = "Allowance".to_owned();
+        app.draft.date_input = "not a date".to_owned();
+        app.add_entry();
+
+        assert_eq!(app.pending_entry_focus, Some(EntryFormField::Date));
+        assert_eq!(app.status.text, "Enter a date like 08/21/2026.");
+        assert_eq!(app.status.severity, StatusSeverity::Error);
+        assert!(app.selected_wallet().entries.is_empty());
+    }
+
+    #[test]
+    fn invalid_starting_balance_explains_accepted_amount_formats() {
+        let (mut app, _dir) = test_app();
+        app.starting_balance_input = "not money".to_owned();
+
+        app.update_starting_balance();
+
+        assert_eq!(
+            app.status.text,
+            "Enter a valid starting balance, like 90, 90.00, or $1,234.56."
+        );
+        assert_eq!(app.status.severity, StatusSeverity::Error);
+        assert_eq!(app.selected_wallet().starting_balance_cents, 0);
+        assert!(!app.data_path.exists());
     }
 
     fn wallet_with_opening_and_entry(app: &mut CofferlyApp, starting_cents: i64, entry_cents: i64) {
