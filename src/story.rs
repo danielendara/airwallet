@@ -127,6 +127,43 @@ mod tests {
     }
 
     #[test]
+    fn encode_rejects_wrong_length() {
+        assert_eq!(
+            encode(&["acorn", "anchor", "apple", "balloon", "book"]).unwrap_err(),
+            "a Coffer Story must contain six catalog objects"
+        );
+        assert_eq!(
+            encode(&["acorn", "anchor", "apple", "balloon", "book", "bridge", "candle"])
+                .unwrap_err(),
+            "a Coffer Story must contain six catalog objects"
+        );
+    }
+
+    #[test]
+    fn encode_rejects_unknown_catalog_ids() {
+        assert_eq!(
+            encode(&[
+                "acorn",
+                "anchor",
+                "apple",
+                "balloon",
+                "book",
+                "not-a-catalog-object"
+            ])
+            .unwrap_err(),
+            "a Coffer Story must contain six catalog objects"
+        );
+    }
+
+    #[test]
+    fn encode_rejects_duplicate_ids() {
+        assert_eq!(
+            encode(&["acorn", "anchor", "apple", "balloon", "book", "acorn"]).unwrap_err(),
+            "a Coffer Story cannot repeat an object"
+        );
+    }
+
+    #[test]
     fn deterministic_shuffle_is_a_permutation_without_modulo_bias_tail() {
         let mut values = [u64::MAX, 0, 1, 2, 3, 4, 5].into_iter().cycle();
         let mut next = || Ok(values.next().unwrap());
