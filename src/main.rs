@@ -1850,6 +1850,12 @@ mod app_tests {
         serde_json::from_slice(&plaintext).unwrap()
     }
 
+    fn unwritable_data_path(dir: &TempDir) -> PathBuf {
+        let blocked = dir.path().join("not-a-directory");
+        std::fs::write(&blocked, b"not a directory").unwrap();
+        blocked.join(DATA_FILE_NAME)
+    }
+
     fn test_story() -> [&'static str; story::STORY_LENGTH] {
         ["acorn", "anchor", "apple", "balloon", "book", "bridge"]
     }
@@ -2342,6 +2348,73 @@ mod app_tests {
     }
 
     #[test]
+    fn add_entry_write_failure_keeps_ledger_and_reports_status_error() {
+        let (mut app, dir) = test_app();
+        app.data_path = unwritable_data_path(&dir);
+        app.draft.kind = EntryKind::Deposit;
+        app.draft.description = "Weekly allowance".to_owned();
+        app.draft.amount = "$10.50".to_owned();
+
+        app.add_entry();
+
+        assert_eq!(app.status.severity, StatusSeverity::Error);
+        assert!(app.status.text.starts_with("Could not save:"));
+        assert_eq!(app.selected_wallet().entries.len(), 1);
+        assert_eq!(
+            app.selected_wallet().entries[0].description,
+            "Weekly allowance"
+        );
+        assert_eq!(app.selected_wallet().entries[0].amount_cents, 1050);
+        assert!(app.draft.description.is_empty());
+        assert!(app.draft.amount.is_empty());
+        assert!(app.raw_bytes.is_none());
+        assert!(!app.data_path.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn add_entry_write_failure_leaves_existing_vault_bytes_unchanged() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (mut app, dir) = test_app();
+        app.draft.kind = EntryKind::Deposit;
+        app.draft.description = "First allowance".to_owned();
+        app.draft.amount = "5".to_owned();
+        app.add_entry();
+        assert_eq!(app.status.severity, StatusSeverity::Success);
+        let original = std::fs::read(&app.data_path).unwrap();
+        let original_raw_bytes = app.raw_bytes.clone();
+
+        app.draft.kind = EntryKind::Deposit;
+        app.draft.description = "Unsaved allowance".to_owned();
+        app.draft.amount = "7".to_owned();
+        let original_permissions = std::fs::metadata(dir.path()).unwrap().permissions();
+        let mut readonly = original_permissions.clone();
+        readonly.set_mode(0o500);
+        std::fs::set_permissions(dir.path(), readonly).unwrap();
+        app.add_entry();
+        std::fs::set_permissions(dir.path(), original_permissions).unwrap();
+
+        assert_eq!(app.status.severity, StatusSeverity::Error);
+        assert!(app.status.text.starts_with("Could not save:"));
+        assert_eq!(app.selected_wallet().entries.len(), 2);
+        assert_eq!(
+            app.selected_wallet().entries[1].description,
+            "Unsaved allowance"
+        );
+        assert_eq!(app.selected_wallet().entries[1].amount_cents, 700);
+        assert!(app.draft.description.is_empty());
+        assert!(app.draft.amount.is_empty());
+        assert_eq!(app.raw_bytes, original_raw_bytes);
+        assert_eq!(std::fs::read(&app.data_path).unwrap(), original);
+        assert_eq!(saved_data(&app, "1234").wallets[0].entries.len(), 1);
+        assert_eq!(
+            saved_data(&app, "1234").wallets[0].entries[0].description,
+            "First allowance"
+        );
+    }
+
+    #[test]
     fn wallet_management_keeps_at_least_one_wallet() {
         let (mut app, _dir) = test_app();
         app.new_child_name_input = "Sam".to_owned();
@@ -2619,6 +2692,22 @@ mod app_tests {
             saved_data(&app, "1234").wallets[0].starting_balance_cents,
             2_000
         );
+    }
+
+    #[test]
+    fn starting_balance_write_failure_keeps_memory_and_reports_status_error() {
+        let (mut app, dir) = test_app();
+        app.data_path = unwritable_data_path(&dir);
+        app.starting_balance_input = "20.00".to_owned();
+
+        app.update_starting_balance();
+
+        assert_eq!(app.status.severity, StatusSeverity::Error);
+        assert!(app.status.text.starts_with("Could not save:"));
+        assert_eq!(app.selected_wallet().starting_balance_cents, 2_000);
+        assert!(app.starting_balance_input.is_empty());
+        assert!(app.raw_bytes.is_none());
+        assert!(!app.data_path.exists());
     }
 
     #[test]

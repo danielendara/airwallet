@@ -327,4 +327,65 @@ mod tests {
 
         assert_eq!(load_raw(&path).unwrap().unwrap(), b"second");
     }
+
+    #[test]
+    fn write_atomically_fails_when_parent_is_not_a_directory() {
+        let test_dir = tempdir().unwrap();
+        let blocked = test_dir.path().join("blocked");
+        fs::write(&blocked, b"not a directory").unwrap();
+        let path = blocked.join("data.bin");
+
+        let error = write_atomically(&path, b"payload").unwrap_err();
+
+        assert!(!error.is_empty());
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn save_encrypted_write_failure_does_not_create_a_vault() {
+        let test_dir = tempdir().unwrap();
+        let blocked = test_dir.path().join("blocked");
+        fs::write(&blocked, b"not a directory").unwrap();
+        let path = blocked.join(APP_NAME).join(DATA_FILE_NAME);
+        let data = default_app_data();
+        let mut session = None;
+
+        let error = save_encrypted(&path, &data, "1234", &mut session).unwrap_err();
+
+        assert!(!error.is_empty());
+        assert!(!path.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_encrypted_write_failure_leaves_existing_bytes_untouched() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let test_dir = tempdir().unwrap();
+        let path = test_dir.path().join(APP_NAME).join(DATA_FILE_NAME);
+        let data = default_app_data();
+        let pin = "1234";
+        let mut session = None;
+        save_encrypted(&path, &data, pin, &mut session).unwrap();
+        let original = fs::read(&path).unwrap();
+
+        let parent = path.parent().unwrap();
+        let original_permissions = fs::metadata(parent).unwrap().permissions();
+        let mut readonly = original_permissions.clone();
+        readonly.set_mode(0o500);
+        fs::set_permissions(parent, readonly).unwrap();
+        let mut mutated = data;
+        mutated.wallets[0].child_name = "Unsaved wallet".to_owned();
+        let error = save_encrypted(&path, &mutated, pin, &mut session).unwrap_err();
+        fs::set_permissions(parent, original_permissions).unwrap();
+
+        assert!(!error.is_empty());
+        assert_eq!(fs::read(&path).unwrap(), original);
+        let (plaintext, _) = crate::crypto::decrypt(&original, pin).unwrap();
+        let loaded = serde_json::from_slice::<AppData>(&plaintext).unwrap();
+        assert_eq!(
+            loaded.wallets[0].child_name,
+            default_app_data().wallets[0].child_name
+        );
+    }
 }
