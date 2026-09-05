@@ -59,6 +59,57 @@ jobs:
       - name: Test
         run: cargo test --locked
 
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - name: Install Linux GUI deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev libgtk-3-dev
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Generate coverage
+        run: |
+          # Modest floor vs 2026-09-05 baseline of 76.11% line coverage
+          # (rustc 1.98.1) after excluding UI-only views.rs (~2% covered)
+          # and maintainer screenshot capture.rs (0%). Those files dominate
+          # uncovered lines (~54% overall) and would hide a drop in money,
+          # story unlock, or ledger tests.
+          ignore='(^|/)src/(views|capture)\.rs$'
+          cargo llvm-cov --locked --html --output-dir coverage \
+            --ignore-filename-regex "$ignore"
+          cargo llvm-cov report --lcov --output-path coverage/lcov.info \
+            --ignore-filename-regex "$ignore"
+          cargo llvm-cov report --fail-under-lines 74 \
+            --ignore-filename-regex "$ignore"
+
+      - name: Upload coverage report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-report
+          path: |
+            coverage/lcov.info
+            coverage/html
+          if-no-files-found: warn
+          retention-days: 14
+
   audit:
     name: Security audit
     runs-on: ubuntu-latest

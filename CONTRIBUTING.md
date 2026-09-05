@@ -17,6 +17,7 @@ Cofferly is a maintainer-led family app. The repository is public so people can 
 cargo fmt -- --check
 cargo clippy --all-targets --locked -- -D warnings
 cargo test --locked
+cargo llvm-cov --locked --fail-under-lines 74 --ignore-filename-regex '(^|/)src/(views|capture)\.rs$'
 cargo audit
 cargo build --release --locked
 ```
@@ -25,7 +26,7 @@ Do not commit `vault.cofferly`, `data.json`, or `.env` files. CI runs `scripts/c
 
 If `cargo` is not on PATH on Windows, add `%USERPROFILE%\.cargo\bin` to PATH or run Cargo from that folder.
 
-CI runs the same checks on Linux, macOS, and Windows (plus `cargo audit` on Ubuntu).
+CI runs the same checks on Linux, macOS, and Windows (plus `cargo audit` and a coverage floor on Ubuntu).
 
 ## Pull Request Checklist
 
