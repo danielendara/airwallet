@@ -354,12 +354,15 @@ impl CofferlyApp {
                             .color(theme::TEXT_SECONDARY),
                         );
                         ui.horizontal(|ui| {
-                            if ui.button("Clear").clicked() {
+                            if ui
+                                .add_enabled(!self.unlocking, egui::Button::new("Clear"))
+                                .clicked()
+                            {
                                 self.reset_story_entry();
                             }
                             if ui
                                 .add_enabled(
-                                    !self.story_selections.is_empty(),
+                                    !self.unlocking && !self.story_selections.is_empty(),
                                     egui::Button::new("Remove last"),
                                 )
                                 .clicked()
@@ -368,23 +371,41 @@ impl CofferlyApp {
                             }
                             match self.lock_mode {
                                 LockMode::SetupConfirm => {
-                                    if ui.button("Back").clicked() {
+                                    if ui
+                                        .add_enabled(!self.unlocking, egui::Button::new("Back"))
+                                        .clicked()
+                                    {
                                         self.back_to_story_reveal();
                                     }
                                 }
                                 LockMode::MigrateConfirm => {
-                                    if ui.button("Back").clicked() {
+                                    if ui
+                                        .add_enabled(!self.unlocking, egui::Button::new("Back"))
+                                        .clicked()
+                                    {
                                         self.back_to_story_reveal();
                                     }
-                                    if ui.button("Cancel migration").clicked() {
+                                    if ui
+                                        .add_enabled(
+                                            !self.unlocking,
+                                            egui::Button::new("Cancel migration"),
+                                        )
+                                        .clicked()
+                                    {
                                         self.cancel_story_migration();
                                     }
                                 }
                                 LockMode::ChangeConfirm => {
-                                    if ui.button("Back").clicked() {
+                                    if ui
+                                        .add_enabled(!self.unlocking, egui::Button::new("Back"))
+                                        .clicked()
+                                    {
                                         self.back_to_story_reveal();
                                     }
-                                    if ui.button("Cancel").clicked() {
+                                    if ui
+                                        .add_enabled(!self.unlocking, egui::Button::new("Cancel"))
+                                        .clicked()
+                                    {
                                         self.cancel_story_change();
                                     }
                                 }
