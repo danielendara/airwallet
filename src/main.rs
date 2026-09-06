@@ -94,7 +94,7 @@ impl EntryDraft {
 }
 
 /// The entry most recently removed from a wallet, held briefly so the user can
-/// undo the deletion. Cleared by any new mutation.
+/// undo the deletion. Cleared by any new mutation or by switching wallets.
 #[derive(Debug, Clone)]
 struct RemovableEntry {
     wallet_index: usize,
@@ -440,6 +440,18 @@ impl CofferlyApp {
 
     fn selected_wallet_mut(&mut self) -> &mut Wallet {
         &mut self.data.wallets[self.selected_wallet]
+    }
+
+    /// Switches the active wallet from the sidebar. Settings promises "Undo
+    /// remains available until the next wallet change", so a pending undo
+    /// from a different wallet must not survive this — otherwise clicking
+    /// Undo after switching wallets would silently restore an entry into a
+    /// wallet the parent is no longer looking at.
+    fn select_wallet(&mut self, index: usize) {
+        self.selected_wallet = index;
+        self.confirm_delete_wallet = false;
+        self.undo = None;
+        self.invalidate_ledger_cache();
     }
 
     /// Start PIN verification. Heavy Argon2id work runs on a background thread so
@@ -1654,9 +1666,7 @@ impl eframe::App for CofferlyApp {
                             });
 
                             if response.clicked() {
-                                self.selected_wallet = index;
-                                self.confirm_delete_wallet = false;
-                                self.invalidate_ledger_cache();
+                                self.select_wallet(index);
                             }
 
                             let rect = response.rect;
@@ -2463,6 +2473,26 @@ mod app_tests {
         assert_eq!(app.selected_wallet().current_balance_cents(), 1050);
         assert!(app.undo.is_none());
         assert_eq!(saved_data(&app, "1234").wallets[0].entries.len(), 1);
+    }
+
+    #[test]
+    fn switching_wallets_clears_a_pending_undo_from_a_different_wallet() {
+        // Settings tells parents "Undo remains available until the next
+        // wallet change." Removing an entry from wallet 0 and then switching
+        // to wallet 1 must drop that pending undo, so a later "Undo" click
+        // cannot silently restore the entry into a wallet the parent isn't
+        // looking at anymore.
+        let (mut app, _dir) = test_app();
+        app.draft.kind = EntryKind::Deposit;
+        app.draft.description = "Weekly allowance".to_owned();
+        app.draft.amount = "$10.50".to_owned();
+        app.add_entry();
+        app.remove_latest_entry();
+        assert!(app.undo.is_some());
+
+        app.select_wallet(1);
+
+        assert!(app.undo.is_none());
     }
 
     #[test]
