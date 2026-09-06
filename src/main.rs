@@ -269,7 +269,10 @@ fn run_story_setup(
         LockMode::MigrateConfirm | LockMode::ChangeConfirm => {
             let mut session = existing_session.expect("session checked before spawn");
             if let Err(message) = session.rewrap_for_secret(secret) {
-                return Err(StorySetupError::Rewrap { message, session: Box::new(session) });
+                return Err(StorySetupError::Rewrap {
+                    message,
+                    session: Box::new(session),
+                });
             }
             let mut session_opt = Some(session);
             match io::save_encrypted(data_path, data, secret, &mut session_opt) {
