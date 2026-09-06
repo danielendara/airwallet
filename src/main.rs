@@ -233,7 +233,7 @@ enum StorySetupError {
     Establish,
     Rewrap {
         message: String,
-        session: SessionCrypto,
+        session: Box<SessionCrypto>,
     },
     SaveFresh {
         message: String,
@@ -269,7 +269,7 @@ fn run_story_setup(
         LockMode::MigrateConfirm | LockMode::ChangeConfirm => {
             let mut session = existing_session.expect("session checked before spawn");
             if let Err(message) = session.rewrap_for_secret(secret) {
-                return Err(StorySetupError::Rewrap { message, session });
+                return Err(StorySetupError::Rewrap { message, session: Box::new(session) });
             }
             let mut session_opt = Some(session);
             match io::save_encrypted(data_path, data, secret, &mut session_opt) {
@@ -605,7 +605,7 @@ impl CofferlyApp {
                         if self.lock_mode != lock_mode {
                             if let Err(StorySetupError::Rewrap { session, .. }) = outcome {
                                 if self.session.is_none() {
-                                    self.session = Some(session);
+                                    self.session = Some(*session);
                                 }
                             }
                         } else {
@@ -913,7 +913,7 @@ impl CofferlyApp {
                 self.set_status_err("Could not secure the new Coffer Story.");
             }
             StorySetupError::Rewrap { message, session } => {
-                self.session = Some(session);
+                self.session = Some(*session);
                 self.set_status_err(format!("Could not prepare migration: {message}"));
             }
             StorySetupError::SaveFresh { message } => {
