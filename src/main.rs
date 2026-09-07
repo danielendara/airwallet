@@ -353,7 +353,20 @@ impl CofferlyApp {
         };
         let data = default_app_data();
 
-        let (selected_wallet, ledger_sort) = restore_ui_state(cc, data.wallets.len());
+        // An on-disk vault's real wallet count isn't known yet -- it's still
+        // encrypted, and `data` above is only the two-wallet placeholder
+        // until `apply_unlock` replaces it. Clamping the persisted selection
+        // against that placeholder here would silently snap a family with 3+
+        // wallets back to wallet 2 on every restart; `apply_unlock` already
+        // re-clamps once the real wallet count is known. Only a fresh
+        // install (no vault to decrypt) needs the eager bound, since it
+        // never routes through `apply_unlock`.
+        let restore_wallet_bound = if raw_bytes.is_some() {
+            usize::MAX
+        } else {
+            data.wallets.len()
+        };
+        let (selected_wallet, ledger_sort) = restore_ui_state(cc, restore_wallet_bound);
         let (lock_screen_image, lock_screen_bg) = load_lock_screen_image(&cc.egui_ctx);
         let open_coffer_image = load_open_coffer_image(&cc.egui_ctx);
         let story_icon_textures = load_story_icon_textures(&cc.egui_ctx);
@@ -2493,6 +2506,105 @@ mod app_tests {
         app.select_wallet(1);
 
         assert!(app.undo.is_none());
+    }
+
+    /// Minimal in-memory `eframe::Storage` so `CofferlyApp::new` can restore
+    /// persisted UI state without touching a real config directory.
+    #[derive(Default)]
+    struct FakeStorage(std::collections::HashMap<String, String>);
+
+    impl eframe::Storage for FakeStorage {
+        fn get_string(&self, key: &str) -> Option<String> {
+            self.0.get(key).cloned()
+        }
+        fn set_string(&mut self, key: &str, value: String) {
+            self.0.insert(key.to_owned(), value);
+        }
+        fn remove_string(&mut self, key: &str) {
+            self.0.remove(key);
+        }
+        fn flush(&mut self) {}
+    }
+
+    /// Points `COFFERLY_DATA_DIR` at a temp dir for the life of the guard and
+    /// restores the previous value on drop, so this test cannot leak state to
+    /// others even if an assertion panics.
+    struct ScopedDataDir(Option<String>);
+
+    impl ScopedDataDir {
+        fn set(path: &std::path::Path) -> Self {
+            let previous = std::env::var("COFFERLY_DATA_DIR").ok();
+            // SAFETY: no other test reads or writes COFFERLY_DATA_DIR, and
+            // this guard restores the previous value on drop.
+            unsafe { std::env::set_var("COFFERLY_DATA_DIR", path) };
+            Self(previous)
+        }
+    }
+
+    impl Drop for ScopedDataDir {
+        fn drop(&mut self) {
+            // SAFETY: see `set` above.
+            unsafe {
+                match &self.0 {
+                    Some(previous) => std::env::set_var("COFFERLY_DATA_DIR", previous),
+                    None => std::env::remove_var("COFFERLY_DATA_DIR"),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn restarting_with_more_than_two_wallets_keeps_the_previously_selected_wallet() {
+        // Regression test: `CofferlyApp::new` used to clamp the persisted
+        // wallet selection against the freshly-constructed placeholder
+        // `AppData` (always 2 wallets) instead of deferring to the real
+        // wallet count, which is unknown until the vault is decrypted. A
+        // family with 3+ children would have their selection silently
+        // snapped back to wallet index 1 on every restart, no matter which
+        // child was actually selected when the app was closed.
+        let dir = tempdir().unwrap();
+        let _data_dir = ScopedDataDir::set(dir.path());
+
+        let mut data = default_app_data();
+        for index in 2..5 {
+            data.wallets.push(Wallet {
+                child_name: format!("Child {}", index + 1),
+                starting_balance_cents: 0,
+                entries: Vec::new(),
+            });
+        }
+        let secret = "coffer-story-v1:test-regression-secret";
+        let mut session = None;
+        let encrypted =
+            crypto::encrypt(&serde_json::to_vec(&data).unwrap(), secret, &mut session).unwrap();
+        std::fs::create_dir_all(dir.path().join(APP_NAME)).unwrap();
+        std::fs::write(dir.path().join(APP_NAME).join(DATA_FILE_NAME), &encrypted).unwrap();
+
+        let mut storage = FakeStorage::default();
+        eframe::set_value(
+            &mut storage,
+            UI_STATE_KEY,
+            &UiState {
+                selected_wallet: 4,
+                ledger_sort_newest_first: true,
+            },
+        );
+        let mut cc = eframe::CreationContext::_new_kittest(egui::Context::default());
+        cc.storage = Some(&storage);
+
+        let mut app = CofferlyApp::new(&cc);
+        assert_eq!(
+            app.selected_wallet, 4,
+            "the persisted selection must survive construction, before the vault is even decrypted"
+        );
+
+        let (plain, session) = crypto::decrypt(app.raw_bytes.as_ref().unwrap(), secret).unwrap();
+        let loaded = serde_json::from_slice::<AppData>(&plain).unwrap();
+        let normalized = data::normalize_app_data(loaded).unwrap();
+        app.apply_unlock(normalized, session);
+
+        assert_eq!(app.selected_wallet, 4);
+        assert_eq!(app.selected_wallet().child_name, "Child 5");
     }
 
     #[test]
