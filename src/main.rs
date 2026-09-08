@@ -1300,6 +1300,18 @@ impl CofferlyApp {
         self.save_with_success(format!("Added wallet for {name}."));
     }
 
+    fn newest_entry_index(entries: &[Entry]) -> Option<usize> {
+        entries
+            .iter()
+            .enumerate()
+            .max_by(|(left_index, left), (right_index, right)| {
+                left.date
+                    .cmp(&right.date)
+                    .then_with(|| left_index.cmp(right_index))
+            })
+            .map(|(index, _)| index)
+    }
+
     fn remove_latest_entry(&mut self) {
         if !self.can_change("Unlock parent mode before removing entries.") {
             return;
@@ -1307,7 +1319,9 @@ impl CofferlyApp {
         self.confirm_delete_wallet = false;
 
         let wallet_name = self.selected_wallet().child_name.clone();
-        if let Some(entry) = self.selected_wallet_mut().entries.pop() {
+        let index = Self::newest_entry_index(&self.selected_wallet().entries);
+        if let Some(index) = index {
+            let entry = self.selected_wallet_mut().entries.remove(index);
             self.undo = Some(RemovableEntry {
                 wallet_index: self.selected_wallet,
                 entry: entry.clone(),
@@ -2854,6 +2868,30 @@ mod app_tests {
         let ctx = egui::Context::default();
         app.auto_lock_if_idle(&ctx);
         assert!(app.parent_unlocked);
+    }
+
+    #[test]
+    fn remove_latest_entry_removes_newest_by_date_not_append_order() {
+        let (mut app, _dir) = test_app();
+        app.draft.kind = EntryKind::Deposit;
+        app.draft.description = "Recent".to_owned();
+        app.draft.amount = "10".to_owned();
+        app.draft.date_input = "07/15/2026".to_owned();
+        app.add_entry();
+
+        app.draft.description = "Backdated".to_owned();
+        app.draft.amount = "5".to_owned();
+        app.draft.date_input = "07/01/2026".to_owned();
+        app.add_entry();
+
+        assert_eq!(app.selected_wallet().entries.len(), 2);
+
+        app.remove_latest_entry();
+
+        assert_eq!(app.selected_wallet().entries.len(), 1);
+        assert_eq!(app.selected_wallet().entries[0].description, "Backdated");
+        assert!(app.status.text.contains("Recent"));
+        assert!(app.undo.is_some());
     }
 
     #[test]
