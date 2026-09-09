@@ -955,7 +955,7 @@ impl CofferlyApp {
             .fill(theme::CARD_BG)
             .stroke(egui::Stroke::new(1.0, theme::BORDER))
             .corner_radius(egui::CornerRadius::same(12))
-            .inner_margin(egui::Margin::same(14))
+            .inner_margin(egui::Margin::same(10))
             .show(ui, |ui| {
                 if let Some(field) = self.pending_entry_focus.take() {
                     ui.memory_mut(|memory| memory.request_focus(crate::entry_field_id(field)));
@@ -972,7 +972,7 @@ impl CofferlyApp {
                         .size(12.0)
                         .color(theme::TEXT_SECONDARY),
                 );
-                ui.add_space(10.0);
+                ui.add_space(6.0);
 
                 ui.label(
                     egui::RichText::new("Transaction type")
@@ -1003,7 +1003,7 @@ impl CofferlyApp {
                         .color(theme::TEXT_PRIMARY),
                 );
                 let desc_response = ui.add_sized(
-                    [ui.available_width(), 36.0],
+                    [ui.available_width(), 32.0],
                     egui::TextEdit::singleline(&mut self.draft.description)
                         .id(crate::entry_field_id(EntryFormField::Description))
                         .char_limit(100)
@@ -1017,7 +1017,7 @@ impl CofferlyApp {
                         .color(theme::TEXT_PRIMARY),
                 );
                 let amount_response = ui.add_sized(
-                    [ui.available_width(), 36.0],
+                    [ui.available_width(), 32.0],
                     egui::TextEdit::singleline(&mut self.draft.amount)
                         .id(crate::entry_field_id(EntryFormField::Amount))
                         .hint_text("$0.00"),
@@ -1030,7 +1030,7 @@ impl CofferlyApp {
                         .color(theme::TEXT_PRIMARY),
                 );
                 let date_response = ui.add_sized(
-                    [ui.available_width(), 36.0],
+                    [ui.available_width(), 32.0],
                     egui::TextEdit::singleline(&mut self.draft.date_input)
                         .id(crate::entry_field_id(EntryFormField::Date))
                         .hint_text("MM/DD/YYYY"),
@@ -1050,7 +1050,7 @@ impl CofferlyApp {
                 };
                 let clicked = ui
                     .add_sized(
-                        [ui.available_width(), 40.0],
+                        [ui.available_width(), 34.0],
                         egui::Button::new(
                             egui::RichText::new(action)
                                 .strong()
