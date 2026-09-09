@@ -2,29 +2,58 @@
 
 ## Unreleased
 
-- Amount and starting-balance validation copy mentions grouped/$ examples (`$1,234.56`) the parser already accepts.
-- Widens the main status chip so long export/unlock messages stay readable.
-- Unlocked chrome wallet picker/sidebar widened (~252→332) so it fits the wider status chip.
-- Entry-form validation failures move keyboard focus to the first invalid field.
-- Amount and starting-balance fields accept pasted grouped money (`$1,234.56`) by ignoring thousands separators.
-- Renaming a wallet keeps the Settings name field filled so it doesn't look like the name was lost.
-- Already-picked Coffer Story objects are ignored and greyed out so a duplicate tap cannot count as a failed unlock.
-- Settings starting-balance field prefills and hints the wallet's opening balance, not the running total, and Save stays disabled until the value actually changes.
-- Adding a wallet from Settings resets the starting-balance field to the new wallet's opening amount so Save cannot write the previous kid's prefill.
-- Deleting a wallet from Settings resets the name and starting-balance fields to the remaining wallet so Save cannot overwrite it.
-- CSV export for one wallet or all wallets (temp file, local open, no cloud).
-- Settings shows the Cofferly version next to the save reminder.
-- Money amounts use thousands separators (`$1,234.56`); typed input is unchanged.
+## 0.3.0 — 2026-09-09
+
+CSV export, backdated entries, grouped money, and Coffer Story / Settings hardening after the 0.2.0 cut.
+
+### Features
+
+- CSV export for one wallet or all wallets (temp file, local open, no cloud). Amounts are unformatted decimals so spreadsheets can sum them.
+- Money amounts use thousands separators (`$1,234.56`); typed input is unchanged. Pasted grouped money (`$1,234.56`) is accepted by ignoring thousands separators.
+- Amount and starting-balance validation copy mentions grouped/$ examples the parser already accepts.
 - Transactions can be backdated (MM/DD/YYYY, default today; future dates are rejected).
 - Parent mode shows a quiet “Locks in …” countdown for the last two minutes of inactivity.
-- README: macOS/Linux `cargo run` / `cargo build --release` notes.
-- README: primary Download links to GitHub Releases; recovery-card guidance and PIN→Story upgrade notes.
-- Adds printable [docs/recovery-card.md](docs/recovery-card.md) template for Coffer Stories.
-- CI: multi-OS test/clippy/fmt workflow plus `cargo audit` on PRs and `main`.
-- Release workflow: compile Inno Setup installer, attach zip + Setup.exe to the GitHub Release.
-- deps: bump `eframe` / `egui_extras` to 0.36.
-- Refreshes README screenshots for Coffer Story unlock, sample ledger, and Settings (including Change Coffer Story); removes obsolete PIN-screen asset.
+- Settings shows the Cofferly version next to the save reminder.
+- Adds printable [docs/recovery-card.md](docs/recovery-card.md) template for Coffer Stories, plus an in-app **Print recovery card** action during story setup.
+
+### Coffer Story
+
+- First two wrong unlock attempts are free (grace), then the existing 1-to-60-minute cooldown ladder starts.
+- Undo-last-pick and Cancel/Back on Coffer Story setup, change, and PIN migration.
+- Already-picked objects are ignored and greyed out so a duplicate tap cannot count as a failed unlock.
+- Unlock grid is exposed to screen readers.
+- Story setup crypto (Argon2id) runs on a background thread so the window stays responsive.
+
+### Security
+
+- CSV text fields that start with `=`, `+`, `-`, `@`, tab, or CR are prefixed with `'` so spreadsheets treat them as text, not formulas.
+- Recovery-card and ledger export temp files use private, random names and are deleted on lock and exit (with a launch-time sweep as backup).
+
+### UX and accessibility
+
+- Widens the main status chip and unlocked chrome wallet picker/sidebar to 300px so long export/unlock messages stay readable.
+- Tightens left-panel vertical density for 1280×800.
+- Entry-form validation failures move keyboard focus to the first invalid field.
+- Renaming a wallet keeps the Settings name field filled.
+- Settings starting-balance field prefills and hints the wallet's opening balance, not the running total, and Save stays disabled until the value actually changes.
+- Adding or deleting a wallet from Settings resets name/starting-balance fields so Save cannot write the previous kid's prefill.
+- Remove latest entry deletes the date-newest row (not last-appended), matching backdated ledgers.
+- Switching wallets from the sidebar clears a pending undo from the previous wallet.
+- Selected wallet is preserved across restart for families with more than two wallets.
+
+### CI and packaging
+
+- Multi-OS test/clippy/fmt workflow plus `cargo audit` on PRs and `main`.
+- Coverage report and 74% line floor (excluding UI-only `views.rs` and screenshot `capture.rs`).
+- Release workflow compiles the Inno Setup installer and attaches zip + Setup.exe to the GitHub Release.
+- README: macOS/Linux `cargo run` / `cargo build --release` notes; primary Download links to GitHub Releases; recovery-card guidance and PIN→Story upgrade notes.
+- Refreshes README screenshots for Coffer Story unlock, sample ledger, and Settings; removes the obsolete PIN-screen asset.
 - Adds maintainer screenshot helper (`scripts/capture-screenshots.sh` + `COFFERLY_CAPTURE` env).
+
+### Dependencies
+
+- Bump `eframe` / `egui_extras` to 0.36.
+- Bump `argon2` to 0.6 (Argon2id parameters unchanged: 64 MiB, 3 iterations, 1 lane).
 
 ## 0.2.0 — 2026-08-06
 

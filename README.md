@@ -44,8 +44,8 @@ No account, no cloud — data stays on your PC as an encrypted `vault.cofferly` 
 cargo build --release
 # → target\release\Cofferly.exe
 
-.\scripts\package-windows.ps1 -Version 0.2.0
-# → dist\Cofferly-0.2.0-windows-x64.zip
+.\scripts\package-windows.ps1 -Version 0.3.0
+# → dist\Cofferly-0.3.0-windows-x64.zip
 ```
 
 ## Coffer Story

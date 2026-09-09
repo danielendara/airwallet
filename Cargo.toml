@@ -1,6 +1,6 @@
 [package]
 name = "cofferly"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "Cofferly - a simple local allowance wallet for kids."
 license = "MIT"
