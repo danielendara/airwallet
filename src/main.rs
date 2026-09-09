@@ -1635,12 +1635,12 @@ impl eframe::App for CofferlyApp {
 
         egui::Panel::left("wallet_picker")
             .resizable(false)
-            .min_size(332.0)
-            .max_size(332.0)
+            .min_size(300.0)
+            .max_size(300.0)
             .frame(
                 egui::Frame::new()
                     .fill(theme::FAINT_BG)
-                    .inner_margin(egui::Margin::same(16))
+                    .inner_margin(egui::Margin::same(11))
                     .stroke(egui::Stroke::new(1.0, theme::BORDER)),
             )
             .show(ui, |ui| {
@@ -1648,6 +1648,7 @@ impl eframe::App for CofferlyApp {
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         ui.set_min_width(ui.available_width());
+                        let panel_content_width = ui.available_width();
                         ui.label(
                             egui::RichText::new("Family wallets")
                                 .strong()
@@ -1659,7 +1660,7 @@ impl eframe::App for CofferlyApp {
                                 .size(12.0)
                                 .color(theme::TEXT_SECONDARY),
                         );
-                        ui.add_space(8.0);
+                        ui.add_space(5.0);
 
                         for index in 0..self.data.wallets.len() {
                             let selected = self.selected_wallet == index;
@@ -1669,7 +1670,7 @@ impl eframe::App for CofferlyApp {
                                 format!("{}, balance {}", child_name, format_money(balance));
 
                             let response = ui.add_sized(
-                                [300.0, 64.0],
+                                [panel_content_width, 50.0],
                                 egui::Button::selectable(selected, "")
                                     .fill(if selected {
                                         theme::ACCENT
@@ -1711,7 +1712,7 @@ impl eframe::App for CofferlyApp {
                             };
 
                             painter.text(
-                                rect.left_top() + egui::vec2(14.0, 12.0),
+                                rect.left_top() + egui::vec2(12.0, 9.0),
                                 egui::Align2::LEFT_TOP,
                                 &child_name,
                                 egui::FontId::proportional(15.0),
@@ -1719,7 +1720,7 @@ impl eframe::App for CofferlyApp {
                             );
 
                             painter.text(
-                                rect.left_bottom() + egui::vec2(14.0, -12.0),
+                                rect.left_bottom() + egui::vec2(12.0, -9.0),
                                 egui::Align2::LEFT_BOTTOM,
                                 format_money(balance),
                                 egui::FontId::proportional(13.0),
@@ -1727,37 +1728,49 @@ impl eframe::App for CofferlyApp {
                             );
                         }
 
-                        ui.add_space(6.0);
+                        ui.add_space(4.0);
 
                         if ui
-                            .add_sized([300.0, 34.0], egui::Button::new("Print this wallet"))
+                            .add_sized(
+                                [panel_content_width, 29.0],
+                                egui::Button::new("Print this wallet"),
+                            )
                             .clicked()
                         {
                             self.print_selected_wallet();
                         }
                         if ui
-                            .add_sized([300.0, 34.0], egui::Button::new("Print all wallets"))
+                            .add_sized(
+                                [panel_content_width, 29.0],
+                                egui::Button::new("Print all wallets"),
+                            )
                             .clicked()
                         {
                             self.print_all_wallets();
                         }
                         if ui
-                            .add_sized([300.0, 34.0], egui::Button::new("Export this wallet CSV"))
+                            .add_sized(
+                                [panel_content_width, 29.0],
+                                egui::Button::new("Export this wallet CSV"),
+                            )
                             .clicked()
                         {
                             self.export_selected_wallet_csv();
                         }
                         if ui
-                            .add_sized([300.0, 34.0], egui::Button::new("Export all wallets CSV"))
+                            .add_sized(
+                                [panel_content_width, 29.0],
+                                egui::Button::new("Export all wallets CSV"),
+                            )
                             .clicked()
                         {
                             self.export_all_wallets_csv();
                         }
 
-                        ui.add_space(12.0);
+                        ui.add_space(7.0);
                         self.entry_form(ui);
 
-                        ui.add_space(10.0);
+                        ui.add_space(6.0);
                         self.status_area(ui);
                     });
             });
